@@ -1,35 +1,24 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React from 'react'
+import { Outlet, useNavigate, Link } from 'react-router-dom'
+import { Car } from 'lucide-react'
 
-function App() {
-  const [count, setCount] = useState(0)
-
+export default function App() {
+  const nav = useNavigate()
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    <div className="min-h-full max-w-md mx-auto">
+      <header className="sticky top-0 z-10 bg-teal-600 text-white">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-white/15 grid place-items-center"><Car className="w-4 h-4"/></div>
+          <div>
+            <div className="text-xs uppercase opacity-90">WesBank Intake</div>
+            <div className="text-sm font-semibold">Capture & Checklist</div>
+          </div>
+          <div className="ml-auto text-xs opacity-90"><Link to="/" className="underline">Home</Link></div>
+        </div>
+      </header>
+      <main className="p-4 pb-24">
+        <Outlet />
+      </main>
+    </div>
   )
 }
-
-export default App
