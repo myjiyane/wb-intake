@@ -7,6 +7,8 @@ import {
   getPassport,
   serverOrigin,
   sealStrict,
+  setDekraUrl,
+  setOdometer
 } from '../lib/api'
 import type { Checklist, ImageRole } from '../types'
 import { Camera, RefreshCcw, CheckCircle2, AlertTriangle, Image as Img, Link as LinkIcon } from 'lucide-react'
@@ -48,6 +50,11 @@ export default function Vin() {
 
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [activeRole, setActiveRole] = useState<ImageRole | ''>('')
+
+  const [dekraUrlInput, setDekraUrlInput] = useState('')
+  const [odoInput, setOdoInput] = useState<number | ''>('')
+  const [saving, setSaving] = useState<'dekra'|'odo'|null>(null)
+
 
   function absUrl(u?: string) {
     if (!u) return ''
@@ -274,6 +281,77 @@ export default function Vin() {
             </div>
           )}
 
+          {/* Details: DEKRA + Odometer */}
+          <div className="rounded-xl border border-slate-200 bg-white p-3">
+            <div className="text-sm font-semibold text-slate-700 mb-2">Details</div>
+
+            {/* DEKRA link */}
+            <div className="mb-3">
+              <label className="block text-xs text-slate-500 mb-1">DEKRA link (https://…)</label>
+              <div className="flex gap-2">
+                <input
+                  value={dekraUrlInput}
+                  onChange={e => setDekraUrlInput(e.target.value)}
+                  placeholder="https://dekra.example/report/123"
+                  className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  disabled={isSealed || saving === 'dekra'}
+                />
+                <button
+                  className="px-3 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50"
+                  disabled={isSealed || saving === 'dekra'}
+                  onClick={async () => {
+                    try {
+                      setSaving('dekra')
+                      await setDekraUrl(vin, dekraUrlInput.trim())
+                      setDekraUrlInput('')
+                      await load()
+                    } catch (e:any) {
+                      alert(e?.message || String(e))
+                    } finally {
+                      setSaving(null)
+                    }
+                  }}
+                >
+                  {saving === 'dekra' ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+
+            {/* Odometer */}
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Odometer (km)</label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  value={odoInput}
+                  onChange={e => setOdoInput(e.target.value ? Number(e.target.value) : '')}
+                  placeholder="e.g. 124000"
+                  className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  disabled={isSealed || saving === 'odo'}
+                />
+                <button
+                  className="px-3 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50"
+                  disabled={isSealed || saving === 'odo' || odoInput === ''}
+                  onClick={async () => {
+                    try {
+                      setSaving('odo')
+                      await setOdometer(vin, Number(odoInput))
+                      setOdoInput('')
+                      await load()
+                    } catch (e:any) {
+                      alert(e?.message || String(e))
+                    } finally {
+                      setSaving(null)
+                    }
+                  }}
+                >
+                  {saving === 'odo' ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+ 
           {/* Ready / Sealed status */}
           <div className={`rounded-xl p-3 border ${
             isSealed

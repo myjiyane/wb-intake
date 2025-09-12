@@ -1,6 +1,6 @@
 import type { Checklist, ImageRole } from '../types';
 
-const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, ''); // e.g. http://192.168.0.23:3000/api/v1
+const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const API_KEY = import.meta.env.VITE_API_KEY as string | undefined; // optional
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -55,7 +55,6 @@ export async function uploadPhotoDev(vin: string, role: ImageRole, file: File, _
 }
 
 export async function getPassport(vin: string) {
-  // returns the full record (draft+sealed) – shape used loosely in the UI
   return j(`${BASE}/passports/${encodeURIComponent(vin)}`);
 }
 
@@ -101,4 +100,25 @@ export async function initDraft(vin: string, lotId: string, roles?: ImageRole[])
   }
   return res.json();
 }
+
+
+export async function setDekraUrl(vin: string, dekraUrl: string) {
+  if (!/^https:\/\//i.test(dekraUrl)) throw new Error('Please enter a valid https:// DEKRA link');
+  return j(`${BASE}/intake/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vin, dekra_url: dekraUrl }),
+  });
+}
+
+export async function setOdometer(vin: string, km: number) {
+  if (!Number.isFinite(km) || km < 0) throw new Error('Enter a valid odometer (km)');
+  return j(`${BASE}/intake/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vin, odometer_km: Math.floor(km), odometer_source: 'manual' }),
+  });
+}
+
+
 
