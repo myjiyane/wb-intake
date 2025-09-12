@@ -1,6 +1,13 @@
+// vite.config.ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const certDir = path.resolve(__dirname, 'certs')
 
 export default defineConfig({
   plugins: [
@@ -18,10 +25,17 @@ export default defineConfig({
         theme_color: '#0f766e',
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }
-        ]
-      }
-    })
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+        ],
+      },
+    }),
   ],
-  server: { host: true } // allows access from phone via LAN IP
+  server: {
+    host: true,
+    https: {
+      key:  fs.readFileSync(path.join(certDir, '192.168.0.196+2-key.pem')),
+      cert: fs.readFileSync(path.join(certDir, '192.168.0.196+2.pem')),
+      minVersion: 'TLSv1.2',
+    },
+  },
 })

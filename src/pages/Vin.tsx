@@ -7,12 +7,9 @@ import {
   getPassport,
   serverOrigin,
   sealStrict,
-  // If you applied my api.ts patch, uncomment the next two:
-  // setDekraUrl,
-  // setOdometer,
 } from '../lib/api'
 import type { Checklist, ImageRole } from '../types'
-import { Camera, RefreshCcw, CheckCircle2, AlertTriangle, Image as Img } from 'lucide-react'
+import { Camera, RefreshCcw, CheckCircle2, AlertTriangle, Image as Img, Link as LinkIcon } from 'lucide-react'
 
 const DEFAULT_ROLES: ImageRole[] = [
   'exterior_front_34', 'exterior_rear_34', 'left_side', 'right_side',
@@ -20,7 +17,7 @@ const DEFAULT_ROLES: ImageRole[] = [
   'tyre_fl', 'tyre_fr', 'tyre_rl', 'tyre_rr'
 ]
 
-// --- NEW: logical groups to render sections inline
+// P1: group roles for sectioned checklist rendering
 const GROUPS: Record<string, ImageRole[]> = {
   Exterior: ['exterior_front_34', 'exterior_rear_34', 'left_side', 'right_side'],
   Interior: ['interior_front', 'interior_rear'],
@@ -52,10 +49,6 @@ export default function Vin() {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [activeRole, setActiveRole] = useState<ImageRole | ''>('')
 
-  // --- NEW: details form state (DEKRA link + ODO)
-  const [dekraUrlInput, setDekraUrlInput] = useState('')
-  const [odoInput, setOdoInput] = useState<number | ''>('')
-
   function absUrl(u?: string) {
     if (!u) return ''
     return /^https?:\/\//i.test(u) ? u : serverOrigin() + u
@@ -77,10 +70,6 @@ export default function Vin() {
       ]
       setPhotos(items)
       setIsSealed(!!rec.sealed)
-
-      // reset details input display hints
-      setDekraUrlInput('')
-      setOdoInput('')
     } catch (e: any) {
       setError(e?.message || String(e))
     } finally {
@@ -90,9 +79,7 @@ export default function Vin() {
 
   useEffect(() => { load() }, [vin])
 
-  const missing = useMemo(() => chk?.checklist.missing || [], [chk])
-
-  // map of role → current photo (for thumbs/replace)
+  // Role → current photo (for thumbs/replace)
   const presentByRole = useMemo(() => {
     const m = new Map<ImageRole, PhotoItem>()
     photos.forEach(p => m.set(p.role, p))
@@ -111,7 +98,7 @@ export default function Vin() {
   }
 
   function choosePhoto(role: ImageRole) {
-    if (isSealed) return // safeguard
+    if (isSealed) return // safeguard when sealed
     setActiveRole(role)
     fileRef.current?.click()
   }
@@ -121,7 +108,7 @@ export default function Vin() {
     if (!file || !activeRole) return
     setUploading(activeRole)
     try {
-      // NOTE: still using dev upload path; presigned variant can be swapped later.
+      // Dev path: can be swapped to presigned in P3
       await uploadPhotoDev(vin, activeRole, file)
       await load()
     } catch (err: any) {
@@ -163,6 +150,15 @@ export default function Vin() {
                   ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   : <AlertTriangle className="w-4 h-4 text-amber-600" />}
                 <span>DEKRA link: <b>{chk.checklist.hasDekra ? 'Present' : 'Missing'}</b></span>
+                {!chk.checklist.hasDekra && (
+                  <button
+                    className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-800 text-white"
+                    onClick={() => alert('Set DEKRA link is part of P2. UI is ready; enable /intake/draft/patch to save.')}
+                    disabled={isSealed}
+                  >
+                    <LinkIcon className="w-3.5 h-3.5" /> Set link
+                  </button>
+                )}
               </li>
               <li className="flex items-center gap-2">
                 {chk.checklist.hasOdo
@@ -179,7 +175,7 @@ export default function Vin() {
             </ul>
           </div>
 
-          {/* Required photos — now grouped with thumbs + Replace */}
+          {/* Required photos — grouped with inline thumbs + Replace */}
           <div className="rounded-xl border border-slate-200 bg-white p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-semibold text-slate-700">Required photos</div>
@@ -231,7 +227,6 @@ export default function Vin() {
                   </div>
                 ))}
 
-                {/* If everything present, show a nice state */}
                 {chk.checklist.presentCount >= chk.checklist.requiredCount && (
                   <div className="text-center text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3 mt-2">
                     All required photos captured ✓
@@ -259,7 +254,7 @@ export default function Vin() {
             )}
           </div>
 
-          {/* Keep the old "Captured" gallery for continuity (optional to remove later) */}
+          {/* (Optional) Keep old gallery for continuity; remove later if desired */}
           {photos.length > 0 && (
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <div className="text-sm font-semibold text-slate-700 mb-2">Captured</div>
@@ -279,71 +274,7 @@ export default function Vin() {
             </div>
           )}
 
-          {/* NEW: Details card (DEKRA link + ODO) — requires api.ts patch, else leave for later */}
-          <div className="rounded-xl border border-slate-200 bg-white p-3">
-            <div className="text-sm font-semibold text-slate-700 mb-2">Details</div>
-
-            <div className="mb-3">
-              <label className="block text-xs text-slate-500 mb-1">DEKRA link (https://…)</label>
-              <div className="flex gap-2">
-                <input
-                  value={dekraUrlInput}
-                  onChange={e => setDekraUrlInput(e.target.value)}
-                  placeholder="https://dekra.example/case/123"
-                  className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" />
-                <button
-                  className="px-3 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50"
-                  disabled={isSealed}
-                  onClick={async () => {
-                    try {
-                      // @ts-expect-error opt-in only if you added setDekraUrl
-                      if (typeof setDekraUrl !== 'function') return alert('API route not available yet')
-                      // @ts-expect-error
-                      await setDekraUrl(vin, dekraUrlInput)
-                      await load()
-                      setDekraUrlInput('')
-                    } catch (e: any) {
-                      alert(e?.message || String(e))
-                    }
-                  }}>
-                  Save
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs text-slate-500 mb-1">Odometer (km)</label>
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  min={0}
-                  value={odoInput}
-                  onChange={e => setOdoInput(e.target.value ? Number(e.target.value) : '')}
-                  placeholder="e.g. 124000"
-                  className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" />
-                <button
-                  className="px-3 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50"
-                  disabled={isSealed}
-                  onClick={async () => {
-                    try {
-                      if (odoInput === '' || Number.isNaN(odoInput)) return alert('Enter a valid number')
-                      // @ts-expect-error opt-in only if you added setOdometer
-                      if (typeof setOdometer !== 'function') return alert('API route not available yet')
-                      // @ts-expect-error
-                      await setOdometer(vin, Number(odoInput))
-                      await load()
-                      setOdoInput('')
-                    } catch (e: any) {
-                      alert(e?.message || String(e))
-                    }
-                  }}>
-                  Save
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Ready/Sealed card */}
+          {/* Ready / Sealed status */}
           <div className={`rounded-xl p-3 border ${
             isSealed
               ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
@@ -351,12 +282,12 @@ export default function Vin() {
             {isSealed ? 'Sealed ✓' : (chk.ready ? 'Ready to seal' : 'Not ready to seal yet')}
           </div>
 
-          {/* Seal button with confirm + sealed safeguards */}
+          {/* Seal action with confirm + safeguards */}
           <button
             disabled={!chk.ready || sealing || isSealed}
             onClick={async () => {
               if (!chk.ready) return
-              const ok = confirm('Seal this vehicle passport? You will not be able to change required fields afterwards.')
+              const ok = confirm('Seal this vehicle passport? Required fields become immutable.')
               if (!ok) return
               try {
                 setSealing(true)

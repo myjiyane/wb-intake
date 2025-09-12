@@ -84,3 +84,21 @@ export async function sealStrict(vin: string, opts?: { force?: boolean }) {
   }
   return res.json();
 }
+
+
+export async function initDraft(vin: string, lotId: string, roles?: ImageRole[]) {
+  const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/,'');
+  const headers: Record<string,string> = { 'Content-Type': 'application/json' };
+  const body = {
+    vin,
+    lot_id: lotId,
+    ...(roles?.length ? { required_photos: roles } : {})
+  };
+  const res = await fetch(`${BASE}/intake/init`, { method: 'POST', headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const txt = await res.text().catch(()=>'');
+    throw new Error(`${res.status} ${txt || res.statusText}`);
+  }
+  return res.json();
+}
+
