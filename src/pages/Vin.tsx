@@ -19,7 +19,6 @@ const DEFAULT_ROLES: ImageRole[] = [
   'tyre_fl', 'tyre_fr', 'tyre_rl', 'tyre_rr'
 ]
 
-// P1: group roles for sectioned checklist rendering
 const GROUPS: Record<string, ImageRole[]> = {
   Exterior: ['exterior_front_34', 'exterior_rear_34', 'left_side', 'right_side'],
   Interior: ['interior_front', 'interior_rear'],
@@ -27,6 +26,22 @@ const GROUPS: Record<string, ImageRole[]> = {
   'Engine bay': ['engine_bay'],
   Tyres: ['tyre_fl', 'tyre_fr', 'tyre_rl', 'tyre_rr'],
 }
+
+const ROLE_GUIDE: Record<ImageRole, { title: string; hint: string; img: string }> = {
+  exterior_front_34: { title: 'Front 3/4 (Left)', hint: 'Stand ±3–4m at front-left. Capture full car, include wheels and roofline.', img: '/examples/exterior_front_34.jpg' },
+  exterior_rear_34:  { title: 'Rear 3/4 (Right)', hint: 'Stand ±3–4m at rear-right. Keep car fully in frame.', img: '/examples/exterior_rear_34.jpg' },
+  left_side:         { title: 'Left Side', hint: 'Side-on profile. Keep the whole car level and centered.', img: '/examples/left_side.jpg' },
+  right_side:        { title: 'Right Side', hint: 'Side-on profile. Watch reflections; avoid cut-offs.', img: '/examples/right_side.jpg' },
+  interior_front:    { title: 'Interior (Front)', hint: 'Capture dashboard + front seats; keep horizon level.', img: '/examples/interior_front.jpg' },
+  interior_rear:     { title: 'Interior (Rear)', hint: 'Rear bench + door cards; ensure good light.', img: '/examples/interior_rear.jpg' },
+  dash_odo:          { title: 'Dash (Odometer)', hint: 'Focus on odometer; avoid glare; make digits readable.', img: '/examples/dash_odo.jpg' },
+  engine_bay:        { title: 'Engine Bay', hint: 'Open bonnet; capture bay from above, well-lit.', img: '/examples/engine_bay.jpg' },
+  tyre_fl:           { title: 'Tyre (Front Left)', hint: 'Close-up of tread surface & sidewall (FL).', img: '/examples/tyre_fl.jpg' },
+  tyre_fr:           { title: 'Tyre (Front Right)', hint: 'Close-up of tread surface & sidewall (FR).', img: '/examples/tyre_fr.jpg' },
+  tyre_rl:           { title: 'Tyre (Rear Left)', hint: 'Close-up of tread surface & sidewall (RL).', img: '/examples/tyre_rl.jpg' },
+  tyre_rr:           { title: 'Tyre (Rear Right)', hint: 'Close-up of tread surface & sidewall (RR).', img: '/examples/tyre_rr.jpg' },
+};
+
 
 type PhotoItem = { role: ImageRole; url?: string; object_key?: string }
 type PassportRecord = {
@@ -55,6 +70,7 @@ export default function Vin() {
   const [odoInput, setOdoInput] = useState<number | ''>('')
   const [saving, setSaving] = useState<'dekra'|'odo'|null>(null)
 
+  const [guideRole, setGuideRole] = useState<ImageRole | null>(null)
 
   function absUrl(u?: string) {
     if (!u) return ''
@@ -83,6 +99,13 @@ export default function Vin() {
       setLoading(false)
     }
   }
+  
+ useEffect(() => {
+    if (!guideRole) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [guideRole]);
 
   useEffect(() => { load() }, [vin])
 
@@ -105,9 +128,8 @@ export default function Vin() {
   }
 
   function choosePhoto(role: ImageRole) {
-    if (isSealed) return // safeguard when sealed
-    setActiveRole(role)
-    fileRef.current?.click()
+    if (isSealed) return
+    setGuideRole(role)
   }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -125,6 +147,43 @@ export default function Vin() {
       setActiveRole('')
       e.target.value = '' // reset
     }
+  }
+  
+  function GuidanceModal({
+    role,
+    onCancel,
+    onProceed,
+  }: {
+    role: ImageRole;
+    onCancel: () => void;
+    onProceed: () => void;
+  }) {
+    const g = ROLE_GUIDE[role];
+    return (
+      <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          role="dialog" aria-modal="true" onClick={onCancel}>
+        <div className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-xl overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+          <div className="p-3 border-b border-slate-200">
+            <div className="text-sm font-semibold text-slate-800">{g?.title || role.replace(/_/g,' ')}</div>
+            <div className="text-xs text-slate-500 mt-0.5">{g?.hint}</div>
+          </div>
+          <div className="aspect-video w-full bg-slate-100">
+            <img src={g?.img} alt={g?.title} className="w-full h-full object-cover" onError={(e:any)=>{ e.currentTarget.style.display='none'; }} />
+          </div>
+          <div className="p-3 grid grid-cols-2 gap-2">
+            <button onClick={onCancel}
+                    className="rounded-xl border border-slate-300 bg-white text-slate-700 py-2 text-sm">
+              Cancel
+            </button>
+            <button onClick={onProceed}
+                    className="rounded-xl bg-teal-600 hover:bg-teal-700 text-white py-2 text-sm font-medium">
+              Open camera
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -254,6 +313,18 @@ export default function Vin() {
               className="hidden"
               onChange={onFile}
             />
+            {guideRole && (
+              <GuidanceModal
+                role={guideRole}
+                onCancel={() => setGuideRole(null)}
+                onProceed={() => {
+                  setGuideRole(null)
+                  setActiveRole(guideRole)
+                  fileRef.current?.click()
+                }}
+              />
+            )}
+
             {uploading && (
               <div className="mt-2 text-xs text-slate-600 inline-flex items-center gap-2">
                 <Img className="w-4 h-4" />{rolePretty(uploading)}: uploading…

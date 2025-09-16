@@ -111,12 +111,12 @@ export async function setDekraUrl(vin: string, dekraUrl: string) {
   });
 }
 
-export async function setOdometer(vin: string, km: number) {
+export async function setOdometer(vin: string, km: number, source: 'manual' | 'dekra' = 'manual') {
   if (!Number.isFinite(km) || km < 0) throw new Error('Enter a valid odometer (km)');
   return j(`${BASE}/intake/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ vin, odometer_km: Math.floor(km), odometer_source: 'manual' }),
+    body: JSON.stringify({ vin, odometer_km: Math.floor(km), odometer_source: source }),
   });
 }
 
