@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import VinScanner from '../components/VinScanner'
 import { initDraft, isValidVin, formatVin } from '../lib/api'
 import type { ImageRole } from '../types'
-import { AlertTriangle, CheckCircle2, Scan, Camera } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Scan, Camera, Shield, Eye, Edit3 } from 'lucide-react'
 
 const DEFAULT_ROLES: ImageRole[] = [
   'exterior_front_34','exterior_rear_34','left_side','right_side',
@@ -12,14 +12,26 @@ const DEFAULT_ROLES: ImageRole[] = [
   'tyre_fl','tyre_fr','tyre_rl','tyre_rr'
 ]
 
+interface ScanResult {
+  vin: string
+  confidence: number
+  candidates: string[]
+  valid: boolean
+  timestamp: number
+  method: 'live_scan' | 'photo_ocr'
+}
+
 export default function Start() {
-  const [vin, setVin] = useState('')
+  const [scannedVin, setScannedVin] = useState<ScanResult | null>(null)
+  const [correctedVin, setCorrectedVin] = useState('')
   const [lot, setLot] = useState('WB-POC-001')
   const [busy, setBusy] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
-  const [validationError, setValidationError] = useState<string | null>(null)
+  const [manualCorrectionMade, setManualCorrectionMade] = useState(false)
+  const [requiresJustification, setRequiresJustification] = useState(false)
+  const [justification, setJustification] = useState('')
+  
   const vinInputRef = useRef<HTMLInputElement | null>(null)
-
   const nav = useNavigate()
 
   function normalizeVin(input: string) {
@@ -30,76 +42,95 @@ export default function Start() {
       .slice(0, 17)
   }
 
-  // Enhanced VIN validation with real-time feedback
-  function validateVinInput(value: string) {
-    const normalized = normalizeVin(value)
-    setVin(normalized)
-    
-    if (!normalized) {
-      setValidationError(null)
-      return
+  // Handle successful VIN scan
+  function handleScanResult(scannedVinValue: string, method: 'live_scan' | 'photo_ocr' = 'live_scan') {
+    const formatted = formatVin(normalizeVin(scannedVinValue))
+    const scanResult: ScanResult = {
+      vin: formatted,
+      confidence: method === 'live_scan' ? 100 : 95, // Live scanning assumed high confidence
+      candidates: [formatted],
+      valid: isValidVin(formatted),
+      timestamp: Date.now(),
+      method
     }
     
-    if (normalized.length < 11) {
-      setValidationError('VIN too short (minimum 11 characters)')
-      return
-    }
-    
-    if (normalized.length === 17) {
-      if (isValidVin(normalized)) {
-        setValidationError(null)
-      } else {
-        setValidationError('Invalid VIN check digit - may still work for older vehicles')
-      }
-    } else {
-      setValidationError('Partial VIN (full VIN is 17 characters)')
-    }
-  }
-
-  async function go() {
-    const v = normalizeVin(vin)
-    if (v.length < 11) {
-      alert('Enter a VIN (at least 11, ideally 17, characters)')
-      vinInputRef.current?.focus()
-      return
-    }
-    
-    setBusy(true)
-    try {
-      await initDraft(v, lot, DEFAULT_ROLES)
-      nav(`/vin/${v}?lot=${encodeURIComponent(lot)}`)
-    } catch (e: any) {
-      console.warn('init failed:', e?.message || e)
-      // Still navigate - init failure shouldn't block workflow
-      nav(`/vin/${v}?lot=${encodeURIComponent(lot)}`)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  // Enhanced scan result handler with validation feedback
-  function handleScanResult(scannedVin: string) {
-    const v = normalizeVin(scannedVin)
-    const formatted = formatVin(v)
-    
-    setVin(formatted)
+    setScannedVin(scanResult)
+    setCorrectedVin(formatted)
+    setManualCorrectionMade(false)
+    setRequiresJustification(false)
+    setJustification('')
     setScanOpen(false)
-    
-    // Provide immediate feedback about scan quality
-    if (isValidVin(formatted)) {
-      setValidationError(null)
-    } else if (formatted.length === 17) {
-      setValidationError('Scanned VIN has invalid check digit - verify manually')
-    } else {
-      setValidationError('Partial VIN scanned - verify complete VIN')
-    }
 
+    // Auto-focus correction field for verification
     setTimeout(() => {
       vinInputRef.current?.focus()
       vinInputRef.current?.select()
     }, 100)
   }
-  
+
+  // Handle manual corrections to scanned VIN
+  function handleVinCorrection(value: string) {
+    const normalized = normalizeVin(value)
+    setCorrectedVin(normalized)
+    
+    if (scannedVin && normalized !== scannedVin.vin) {
+      setManualCorrectionMade(true)
+      // Require justification for significant changes
+      if (normalized.length >= 11 && Math.abs(normalized.length - scannedVin.vin.length) > 2) {
+        setRequiresJustification(true)
+      }
+    } else {
+      setManualCorrectionMade(false)
+      setRequiresJustification(false)
+      setJustification('')
+    }
+  }
+
+  // Reset scan to try again
+  function resetScan() {
+    setScannedVin(null)
+    setCorrectedVin('')
+    setManualCorrectionMade(false)
+    setRequiresJustification(false)
+    setJustification('')
+  }
+
+  // Proceed to inspection
+  async function proceedToInspection() {
+    const finalVin = correctedVin || scannedVin?.vin
+    if (!finalVin || finalVin.length < 11) {
+      alert('Valid VIN required to proceed')
+      return
+    }
+
+    // Log any manual corrections for audit trail
+    if (manualCorrectionMade && scannedVin) {
+      console.log('VIN Manual Correction Logged:', {
+        originalScanned: scannedVin.vin,
+        correctedTo: correctedVin,
+        scanConfidence: scannedVin.confidence,
+        scanMethod: scannedVin.method,
+        justification: justification || 'No justification provided',
+        timestamp: new Date().toISOString(),
+        lotId: lot
+      })
+      
+      // In a real system, this would be sent to an audit API
+      // await logManualCorrection({ ... })
+    }
+
+    setBusy(true)
+    try {
+      await initDraft(finalVin, lot, DEFAULT_ROLES)
+      nav(`/vin/${finalVin}?lot=${encodeURIComponent(lot)}`)
+    } catch (e: any) {
+      console.warn('init failed:', e?.message || e)
+      nav(`/vin/${finalVin}?lot=${encodeURIComponent(lot)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   useEffect(() => {
     if (!scanOpen) return
     const prev = document.body.style.overflow
@@ -107,143 +138,208 @@ export default function Start() {
     return () => { document.body.style.overflow = prev }
   }, [scanOpen])
 
-  // Get validation status for UI
-  const vinStatus = (() => {
-    if (!vin) return null
-    if (vin.length < 11) return 'too-short'
-    if (vin.length === 17 && isValidVin(vin)) return 'valid'
-    if (vin.length === 17) return 'invalid-checksum'
-    return 'partial'
-  })()
-
-  const canProceed = vin.length >= 11
+  const finalVin = correctedVin || scannedVin?.vin || ''
+  const canProceed = finalVin.length >= 11 && (!requiresJustification || justification.trim().length > 0)
+  const vinStatus = finalVin ? (isValidVin(finalVin) ? 'valid' : 'invalid') : null
 
   return (
-    <div className="space-y-6">
-      {/* Header with better context */}
+    <div className="space-y-6 max-w-md mx-auto">
+      {/* Header */}
       <div className="text-center space-y-2">
         <h1 className="text-xl font-semibold text-slate-800">Vehicle Inspection</h1>
         <p className="text-sm text-slate-600">
-          Enter or scan the VIN to begin DEKRA-style documentation
+          Professional DEKRA-style documentation workflow
         </p>
       </div>
 
-      {/* Enhanced VIN input with validation */}
-      <div className="space-y-3">
-        <label className="block text-sm font-medium text-slate-700">
-          Vehicle Identification Number (VIN)
-        </label>
-        
-        <div className="relative">
-          <input
-            ref={vinInputRef}
-            className={`w-full border rounded-lg px-4 py-3 text-lg font-mono tracking-wider
-              ${vinStatus === 'valid' ? 'border-green-300 bg-green-50' :
-                vinStatus === 'invalid-checksum' ? 'border-yellow-300 bg-yellow-50' :
-                vinStatus === 'too-short' ? 'border-rose-300 bg-rose-50' :
-                'border-slate-300 bg-white'}
-              ${busy ? 'opacity-50' : ''}
-            `}
-            placeholder="WDD2040082R088866"
-            value={vin}
-            onChange={e => validateVinInput(e.target.value)}
-            disabled={busy}
-            inputMode="latin"
-            autoCapitalize="characters"
-            maxLength={17}
-          />
-          
-          {/* Validation indicator */}
-          {vinStatus && (
-            <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
-              {vinStatus === 'valid' ? (
-                <CheckCircle2 className="w-5 h-5 text-green-600" />
-              ) : (
-                <AlertTriangle className="w-5 h-5 text-amber-600" />
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Validation feedback */}
-        {validationError && (
-          <div className={`text-xs px-3 py-2 rounded-lg flex items-center gap-2
-            ${vinStatus === 'invalid-checksum' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' :
-              'bg-rose-50 text-rose-700 border border-rose-200'}
-          `}>
-            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            {validationError}
-          </div>
-        )}
-
-        {/* VIN info helper */}
-        {vin && vin.length >= 11 && (
-          <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
-            <div className="font-medium mb-1">VIN Analysis:</div>
-            <div className="space-y-1">
-              <div>Length: {vin.length}/17 characters</div>
-              <div>Format: {isValidVin(vin) ? 'Valid checksum' : 'Invalid/partial'}</div>
-              {vin.length >= 3 && (
-                <div>Manufacturer: {vin.substring(0, 3)} (World Manufacturer Identifier)</div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Enhanced scanning options */}
-      <div className="space-y-3">
+      {/* Primary VIN Scanning Section */}
+      <div className="rounded-xl border-2 border-blue-200 bg-blue-50/50 p-4 space-y-4">
         <div className="flex items-center gap-3">
-          <div className="flex-1 h-px bg-slate-200" />
-          <div className="text-xs uppercase tracking-wide text-slate-500 font-medium">
-            Or scan VIN
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+            <Scan className="w-4 h-4 text-white" />
           </div>
-          <div className="flex-1 h-px bg-slate-200" />
+          <div>
+            <h2 className="font-semibold text-slate-800">Step 1: Scan VIN</h2>
+            <p className="text-xs text-slate-600">Required for vehicle identification</p>
+          </div>
         </div>
 
-        {/* Prominent scan button with better description */}
-        <button
-          type="button"
-          onClick={() => setScanOpen(true)}
-          disabled={busy}
-          className={`w-full rounded-xl py-4 font-semibold tracking-wide text-white
-            flex items-center justify-center gap-3 transition-all
-            ${busy ? 'bg-emerald-400' : 'bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99]'}
-          `}
-        >
-          <div className="flex items-center gap-3">
-            <Camera className="w-5 h-5" />
-            <div className="text-left">
-              <div>Scan VIN</div>
-              <div className="text-xs opacity-90 font-normal">
-                Windshield, dashboard, or engine bay
+        {!scannedVin ? (
+          <div className="space-y-3">
+            <button
+              onClick={() => setScanOpen(true)}
+              disabled={busy}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 px-4 rounded-xl font-semibold 
+                        flex items-center justify-center gap-3 transition-all active:scale-[0.99] disabled:opacity-50"
+            >
+              <Camera className="w-5 h-5" />
+              <div className="text-left">
+                <div>SCAN VIN</div>
+                <div className="text-xs opacity-90 font-normal">
+                  Windshield, dashboard, or engine bay
+                </div>
+              </div>
+            </button>
+            
+            <div className="text-xs text-slate-500 text-center">
+              VIN scanning ensures accuracy and prevents data entry errors
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {/* Scan Success Indicator */}
+            <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>VIN scanned successfully</span>
+              <button 
+                onClick={resetScan}
+                className="ml-auto text-xs px-2 py-1 bg-green-200 hover:bg-green-300 rounded transition-colors"
+              >
+                Scan Again
+              </button>
+            </div>
+
+            {/* Scan Details */}
+            <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-600">
+                <span>Scanned VIN:</span>
+                <span className="flex items-center gap-1">
+                  <Eye className="w-3 h-3" />
+                  {scannedVin.confidence.toFixed(0)}% confidence
+                </span>
+              </div>
+              <div className="font-mono text-sm bg-slate-50 px-3 py-2 rounded border">
+                {scannedVin.vin}
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <div className={`w-2 h-2 rounded-full ${scannedVin.valid ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                <span className="text-slate-600">
+                  {scannedVin.valid ? 'Valid VIN format' : 'Invalid check digit - verify manually'}
+                </span>
               </div>
             </div>
           </div>
-        </button>
-
-        <div className="text-xs text-slate-500 text-center">
-          VIN is typically found on the windshield (driver side), dashboard, or engine bay
-        </div>
+        )}
       </div>
 
-      {/* Lot input with better spacing */}
+      {/* VIN Correction Section - Only shown after scan */}
+      {scannedVin && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+              manualCorrectionMade ? 'bg-amber-600' : 'bg-green-600'
+            }`}>
+              <Edit3 className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-slate-800">Step 2: Verify & Correct</h2>
+              <p className="text-xs text-slate-600">
+                {manualCorrectionMade ? 'Manual correction detected' : 'Verify scanned VIN is accurate'}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-slate-700">
+              Final VIN {manualCorrectionMade && <span className="text-amber-600">(Modified)</span>}
+            </label>
+            
+            <div className="relative">
+              <input
+                ref={vinInputRef}
+                value={correctedVin}
+                onChange={e => handleVinCorrection(e.target.value)}
+                className={`w-full border rounded-lg px-4 py-3 text-lg font-mono tracking-wider
+                  ${vinStatus === 'valid' ? 'border-green-300 bg-green-50' :
+                    vinStatus === 'invalid' ? 'border-yellow-300 bg-yellow-50' :
+                    'border-slate-300 bg-white'}
+                  ${manualCorrectionMade ? 'ring-2 ring-amber-200' : ''}
+                `}
+                placeholder="Verify VIN accuracy"
+                disabled={busy}
+                inputMode="latin"
+                autoCapitalize="characters"
+                maxLength={17}
+              />
+              
+              {vinStatus && (
+                <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                  {vinStatus === 'valid' ? (
+                    <CheckCircle2 className="w-5 h-5 text-green-600" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5 text-amber-600" />
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Manual correction warning */}
+            {manualCorrectionMade && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-amber-700">
+                    <div className="font-medium">Manual correction detected</div>
+                    <div className="text-xs mt-1">
+                      Original: <span className="font-mono">{scannedVin.vin}</span><br/>
+                      Modified: <span className="font-mono">{correctedVin}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Justification field for significant changes */}
+            {requiresJustification && (
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-amber-700">
+                  Correction Justification Required
+                </label>
+                <textarea
+                  value={justification}
+                  onChange={e => setJustification(e.target.value)}
+                  placeholder="Explain why the VIN was manually corrected (e.g., damaged plate, poor lighting, etc.)"
+                  className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm bg-amber-50"
+                  rows={3}
+                  disabled={busy}
+                />
+              </div>
+            )}
+
+            {/* VIN Analysis */}
+            {finalVin.length >= 11 && (
+              <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
+                <div className="font-medium mb-1">VIN Analysis:</div>
+                <div className="space-y-1">
+                  <div>Length: {finalVin.length}/17 characters</div>
+                  <div>Format: {isValidVin(finalVin) ? 'Valid checksum' : 'Invalid/partial'}</div>
+                  {finalVin.length >= 3 && (
+                    <div>WMI: {finalVin.substring(0, 3)} (World Manufacturer ID)</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Lot ID Section */}
       <div className="space-y-2">
         <label className="block text-sm font-medium text-slate-700">
           Lot ID (optional)
         </label>
         <input
-          className="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm"
-          placeholder="WB-POC-001"
           value={lot}
           onChange={e => setLot(e.target.value)}
+          placeholder="WB-POC-001"
+          className="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm"
           disabled={busy}
         />
       </div>
 
-      {/* Enhanced proceed button */}
+      {/* Proceed Button */}
       <button
-        onClick={go}
+        onClick={proceedToInspection}
         disabled={!canProceed || busy}
         className={`w-full rounded-xl py-4 font-semibold text-white transition-all
           ${!canProceed || busy ? 'bg-slate-300 cursor-not-allowed' :
@@ -255,12 +351,14 @@ export default function Start() {
             <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
             Preparing inspection...
           </div>
+        ) : !scannedVin ? (
+          'Scan VIN to continue'
         ) : !canProceed ? (
-          'Enter VIN to continue'
+          requiresJustification ? 'Justification required' : 'Verify VIN to continue'
         ) : (
           <div className="flex items-center justify-center gap-2">
-            <Scan className="w-5 h-5" />
-            Start Vehicle Inspection
+            <Shield className="w-5 h-5" />
+            Start Professional Inspection
           </div>
         )}
       </button>
@@ -278,7 +376,7 @@ export default function Start() {
           onResult={handleScanResult}
           onClose={() => setScanOpen(false)}
           showValidation={true}
-          allowInvalidVins={false} // Force validation on entry page
+          allowInvalidVins={true} // Allow but flag invalid VINs for correction
         />
       )}
     </div>
