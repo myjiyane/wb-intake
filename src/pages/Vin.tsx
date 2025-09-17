@@ -85,7 +85,7 @@ export default function Vin() {
   const [activeRole, setActiveRole] = useState<ImageRole | ''>('')
 
   const [dekraUrlInput, setDekraUrlInput] = useState('')
-  const [saving, setSaving] = useState<'dekra'|'odo'|null>(null)
+  const [saving, setSaving] = useState<'dekra'|'odo'|'tyres'|null>(null)
 
   const [guideRole, setGuideRole] = useState<ImageRole | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('exterior')
@@ -105,6 +105,22 @@ export default function Vin() {
   const [odometerInput, setOdometerInput] = useState<number | ''>('')
   const [odometerJustification, setOdometerJustification] = useState('')
   const [odometerScanning, setOdometerScanning] = useState(false)
+
+  // Tyre depth states
+  const [tyreDepths, setTyreDepths] = useState<{
+    fl: number | null
+    fr: number | null
+    rl: number | null
+    rr: number | null
+  }>({
+    fl: null,
+    fr: null,
+    rl: null,
+    rr: null
+  })
+
+  // Check if any tyre data has been entered
+  const hasTyreData = Object.values(tyreDepths).some(depth => depth !== null && depth !== undefined)
 
   function absUrl(u?: string) {
     if (!u) return ''
@@ -135,22 +151,11 @@ export default function Vin() {
 
   // Extract odometer reading from OCR text
   function extractOdometerFromText(text: string): number | null {
-    console.log('Raw OCR text for odometer:', text); // Debug logging
-    
-    // Clean and normalize the text
-    const cleanText = text.replace(/[^\d\s]/g, ' ').trim();
-    
-    // More aggressive number extraction patterns
+    // Look for sequences of 3-6 digits that could be odometer readings
     const patterns = [
-      // Standard patterns (existing)
-      /(?:odometer|mileage|miles|km|kilometers)[\s:]*([0-9]{3,6})/gi,
-      /\b([0-9]{3,6})\s*(?:km|miles|mi)\b/gi,
-      
-      // New patterns for digital displays
-      /\b([0-9]{1,3}[,.\s]?[0-9]{3,6})\b/g, // Numbers with separators
-      /([0-9]\s+[0-9]\s+[0-9]\s+[0-9]\s+[0-9]\s*[0-9]?)/g, // Spaced digits
-      /\b([0-9]{4,6})\b/g, // Any 4-6 digit sequence
-      /([0-9]+)/g // Any number sequence as fallback
+      /(?:odometer|mileage|miles|km|kilometers)[\s:]*([0-9]{3,6})/i,
+      /\b([0-9]{3,6})\s*(?:km|miles|mi)\b/i,
+      /\b([0-9]{1,3}[,.]?[0-9]{3,6})\b/g // General number patterns
     ]
     
     const candidates: number[] = []
@@ -158,32 +163,16 @@ export default function Vin() {
     for (const pattern of patterns) {
       const matches = text.matchAll(pattern)
       for (const match of matches) {
-        let numStr = (match[1] || match[0] || '').replace(/[\s,.](?=\d)/g, '') // Remove separators
-        numStr = numStr.replace(/\s+/g, '') // Remove all spaces
-        
+        const numStr = match[1].replace(/[,.](?=\d{3})/g, '') // Remove thousands separators
         const num = parseInt(numStr, 10)
-        if (!Number.isNaN(num) && num >= 100 && num <= 999999) {
+        if (num >= 100 && num <= 999999) { // Reasonable odometer range
           candidates.push(num)
-          console.log(`Found odometer candidate: ${num} from "${match[0]}"`)
         }
       }
     }
     
-    // Sort candidates by likelihood (prefer 5-6 digit numbers for modern cars)
-    candidates.sort((a, b) => {
-      const aDigits = a.toString().length
-      const bDigits = b.toString().length
-      
-      // Prefer 5-6 digit numbers
-      if (aDigits >= 5 && bDigits < 5) return -1
-      if (bDigits >= 5 && aDigits < 5) return 1
-      
-      // Then prefer higher numbers (odometers accumulate)
-      return b - a
-    })
-    
-    console.log('All odometer candidates:', candidates)
-    return candidates.length > 0 ? candidates[0] : null
+    // Return the most likely candidate (highest number, as odometers accumulate)
+    return candidates.length > 0 ? Math.max(...candidates) : null
   }
 
   // Capture odometer photo and extract reading
@@ -202,10 +191,10 @@ export default function Vin() {
       // Process with OCR
       const result = await ocrVinFromImage(file, {
         compress: true,
-        onProgress: (stage: string) => console.log(`Odometer OCR ${stage}...`)
+        onProgress: (stage) => console.log(`Odometer OCR ${stage}...`)
       })
       
-      const extractedKm = extractOdometerFromText(result.fullText || '')
+      const extractedKm = extractOdometerFromText(result.fullText)
       
       // Create photo URL for display
       const photoUrl = URL.createObjectURL(file)
@@ -213,7 +202,7 @@ export default function Vin() {
       const reading: OdometerReading = {
         km: extractedKm,
         confidence: result.confidence,
-        rawText: result.fullText || '',
+        rawText: result.fullText,
         photo: photoUrl,
         timestamp: Date.now(),
         manuallyAdjusted: false
@@ -255,8 +244,35 @@ export default function Vin() {
     }
   }
 
-  // Save odometer reading
-  async function saveOdometer() {
+  // Save tyre depths
+  async function saveTyreDepths() {
+    try {
+      setSaving('tyres')
+      
+      // You'll need to add this API function to your api.ts file
+      // await setTyreDepths(vin, tyreDepths)
+      
+      // For now, let's use a generic API call
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/intake/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          vin, 
+          tyres_mm: tyreDepths 
+        })
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to save tyre depths: ${response.status}`)
+      }
+      
+      await load() // Refresh the data
+    } catch (e: any) {
+      alert(e?.message || String(e))
+    } finally {
+      setSaving(null)
+    }
+  }
     const finalReading = typeof odometerInput === 'number' ? odometerInput : null
     if (!finalReading || finalReading < 0) {
       alert('Please enter a valid odometer reading')
@@ -350,7 +366,7 @@ export default function Vin() {
             setOcrScanning(true)
             const result = await ocrVinFromImage(file, {
               compress: true,
-              onProgress: (stage: string) => console.log(`VIN OCR ${stage}...`)
+              onProgress: (stage) => console.log(`VIN OCR ${stage}...`)
             })
             
             if (result.vin) {
@@ -397,7 +413,7 @@ export default function Vin() {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'image/*'
-    ;(input as any).capture = 'environment' // TS: capture isn't in the DOM typings
+    input.capture = 'environment'
     
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0]
@@ -407,7 +423,7 @@ export default function Vin() {
         setOcrScanning(true)
         const result = await ocrVinFromImage(file, {
           compress: true,
-          onProgress: (stage: string) => console.log(`VIN verification ${stage}...`)
+          onProgress: (stage) => console.log(`VIN verification ${stage}...`)
         })
         
         setLastVinScan({
@@ -548,7 +564,148 @@ export default function Vin() {
 
       {chk && (
         <>
-          {/* Priority Section: Odometer Reading */}
+          {/* Priority Section: Tyre Measurements */}
+          <div className="rounded-xl border-2 border-orange-200 bg-orange-50/50 p-4 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center">
+                <Gauge className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-slate-800">Tyre Tread Depths</h3>
+                <p className="text-xs text-slate-600">Measure with tread depth gauge (mm)</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {/* Visual tyre position guide */}
+              <div className="bg-white border border-slate-200 rounded-lg p-3">
+                <div className="text-xs text-slate-600 mb-2 text-center">Vehicle Position Guide</div>
+                <div className="grid grid-cols-2 gap-4 max-w-48 mx-auto">
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-800 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">FL</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Front Left</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-800 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">FR</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Front Right</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-600 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">RL</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Rear Left</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-600 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">RR</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Rear Right</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tyre depth input grid */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">Front Left (FL)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.fl || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, fl: e.target.value ? Number(e.target.value) : null }))}
+                      placeholder="0.0"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
+                      disabled={isSealed}
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">Front Right (FR)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.fr || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, fr: e.target.value ? Number(e.target.value) : null }))}
+                      placeholder="0.0"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
+                      disabled={isSealed}
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">Rear Left (RL)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.rl || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, rl: e.target.value ? Number(e.target.value) : null }))}
+                      placeholder="0.0"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
+                      disabled={isSealed}
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">Rear Right (RR)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.rr || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, rr: e.target.value ? Number(e.target.value) : null }))}
+                      placeholder="0.0"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
+                      disabled={isSealed}
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick reference guide */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <div className="text-xs text-blue-700">
+                  <div className="font-medium mb-1">Tread Depth Guide:</div>
+                  <div className="space-y-1">
+                    <div>• <strong>8-12mm:</strong> New tyre</div>
+                    <div>• <strong>4-8mm:</strong> Good condition</div>
+                    <div>• <strong>2-4mm:</strong> Fair condition</div>
+                    <div>• <strong>0-2mm:</strong> Replace required</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Save button */}
+              <button
+                onClick={saveTyreDepths}
+                disabled={saving === 'tyres' || isSealed || !hasTyreData}
+                className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3 px-4 rounded-xl font-medium disabled:opacity-50 transition-colors"
+              >
+                {saving === 'tyres' ? 'Saving...' : 'Save Tyre Measurements'}
+              </button>
+            </div>
+          </div>
           <div className="rounded-xl border-2 border-emerald-200 bg-emerald-50/50 p-4 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
@@ -708,6 +865,7 @@ export default function Vin() {
                   : <AlertTriangle className="w-4 h-4 text-amber-600" />}
                 <span>Photos: <b>{chk.checklist.presentCount}/{chk.checklist.requiredCount}</b></span>
               </li>
+              </li>
             </ul>
           </div>
 
@@ -775,11 +933,11 @@ export default function Vin() {
                   >
                     <span className="font-medium">{t.label}</span>
                     {missing > 0 ? (
-                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 text-[11px] rounded-full bg-rose-100 text-rose-700 border-rose-200 border px-1">
+                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 text-[11px] rounded-full bg-rose-100 text-rose-700 border border-rose-200 px-1">
                         {missing}
                       </span>
                     ) : (
-                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 text-[11px] rounded-full bg-emerald-100 text-emerald-700 border-emerald-200 border px-1">
+                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 text-[11px] rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200 px-1">
                         ✓
                       </span>
                     )}
@@ -859,7 +1017,7 @@ export default function Vin() {
               ref={fileRef}
               type="file"
               accept="image/*"
-              {...({ capture: 'environment' } as any)}
+              capture="environment"
               className="hidden"
               onChange={onFile}
             />
@@ -868,7 +1026,7 @@ export default function Vin() {
               ref={odometerFileRef}
               type="file"
               accept="image/*"
-              {...({ capture: 'environment' } as any)}
+              capture="environment"
               className="hidden"
               onChange={onOdometerFile}
             />
