@@ -146,9 +146,9 @@ export default function Start() {
     <div className="space-y-6 max-w-md mx-auto">
       {/* Header */}
       <div className="text-center space-y-2">
-        <h1 className="text-xl font-semibold text-slate-800">Vehicle Inspection</h1>
+        <h1 className="text-xl font-semibold text-slate-800">Vehicle Auction Passport</h1>
         <p className="text-sm text-slate-600">
-          Professional DEKRA-style documentation workflow
+          Digital auction passport made easy
         </p>
       </div>
 

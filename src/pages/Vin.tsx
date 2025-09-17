@@ -1,4 +1,3 @@
-// src/pages/Vin.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import {
@@ -8,7 +7,7 @@ import {
   getPassport,
   serverOrigin,
   sealStrict,
-  setDekraUrl,
+  setDekraUrl as setDekraUrlApi,
   setOdometer,
   ocrVinFromImage,
   isValidVin,
@@ -119,7 +118,7 @@ export default function Vin() {
   const [guideRole, setGuideRole] = useState<ImageRole | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('exterior')
 
-  const [dekraUrl, setDekraUrl] = useState<string>('')
+  const [dekraUrlHref, setDekraUrlHref] = useState<string>('')
 
   // Enhanced OCR states
   const [ocrScanning, setOcrScanning] = useState(false)
@@ -182,10 +181,9 @@ export default function Vin() {
         })
       }
 
-      // Populate DEKRA URL from saved data
       const savedDekraUrl = rec.sealed?.dekra?.url || rec.draft?.dekra?.url
       if (savedDekraUrl) {
-        setDekraUrl(savedDekraUrl)
+        setDekraUrlHref(savedDekraUrl)
       }
       
     } catch (e: any) {
@@ -510,6 +508,14 @@ export default function Vin() {
     }
     input.click()
   }
+  
+  function normalizeExternalUrl(u: string): string {
+    if (!u) return '';
+    let s = u.trim();
+    if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+    try { new URL(s); return s; } catch { return u.trim(); }
+  }
+
 
   function GuidanceModal({
     role,
@@ -983,15 +989,15 @@ export default function Vin() {
               Report Link
             </div>
             
-            {dekraUrl ? (
+            {dekraUrlHref  ? (
               <div className="bg-green-50 border border-green-200 rounded-lg p-3">
                 <a 
-                  href={dekraUrl} 
+                  href={dekraUrlHref} 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="text-blue-600 hover:text-blue-800 underline text-sm break-all"
                 >
-                  {dekraUrl}
+                  {dekraUrlHref}
                 </a>
               </div>
             ) : !isSealed ? (
@@ -1009,7 +1015,8 @@ export default function Vin() {
                   onClick={async () => {
                     try {
                       setSaving('dekra')
-                      await setDekraUrl(vin, dekraUrlInput.trim())
+                      const normalizedUrl = normalizeExternalUrl(dekraUrlInput)
+                      await setDekraUrlApi(vin, normalizedUrl)
                       setDekraUrlInput('')
                       await load()
                     } catch (e:any) {
