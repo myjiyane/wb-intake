@@ -32,10 +32,6 @@ export default defineConfig({
   ],
   server: {
     host: true,
-    https: {
-      key:  fs.readFileSync(path.join(certDir, '192.168.0.196+2-key.pem')),
-      cert: fs.readFileSync(path.join(certDir, '192.168.0.196+2.pem')),
-      minVersion: 'TLSv1.2',
-    },
+    https: false,
   },
 })
