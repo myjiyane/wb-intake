@@ -135,11 +135,22 @@ export default function Vin() {
 
   // Extract odometer reading from OCR text
   function extractOdometerFromText(text: string): number | null {
-    // Look for sequences of 3-6 digits that could be odometer readings
+    console.log('Raw OCR text for odometer:', text); // Debug logging
+    
+    // Clean and normalize the text
+    const cleanText = text.replace(/[^\d\s]/g, ' ').trim();
+    
+    // More aggressive number extraction patterns
     const patterns = [
+      // Standard patterns (existing)
       /(?:odometer|mileage|miles|km|kilometers)[\s:]*([0-9]{3,6})/gi,
       /\b([0-9]{3,6})\s*(?:km|miles|mi)\b/gi,
-      /\b([0-9]{1,3}[,.]?[0-9]{3,6})\b/g // General number patterns
+      
+      // New patterns for digital displays
+      /\b([0-9]{1,3}[,.\s]?[0-9]{3,6})\b/g, // Numbers with separators
+      /([0-9]\s+[0-9]\s+[0-9]\s+[0-9]\s+[0-9]\s*[0-9]?)/g, // Spaced digits
+      /\b([0-9]{4,6})\b/g, // Any 4-6 digit sequence
+      /([0-9]+)/g // Any number sequence as fallback
     ]
     
     const candidates: number[] = []
@@ -147,16 +158,32 @@ export default function Vin() {
     for (const pattern of patterns) {
       const matches = text.matchAll(pattern)
       for (const match of matches) {
-        const numStr = (match[1] || '').replace(/[,.](?=\d{3})/g, '') // Remove thousands separators
+        let numStr = (match[1] || match[0] || '').replace(/[\s,.](?=\d)/g, '') // Remove separators
+        numStr = numStr.replace(/\s+/g, '') // Remove all spaces
+        
         const num = parseInt(numStr, 10)
-        if (!Number.isNaN(num) && num >= 100 && num <= 999999) { // Reasonable odometer range
+        if (!Number.isNaN(num) && num >= 100 && num <= 999999) {
           candidates.push(num)
+          console.log(`Found odometer candidate: ${num} from "${match[0]}"`)
         }
       }
     }
     
-    // Return the most likely candidate (highest number, as odometers accumulate)
-    return candidates.length > 0 ? Math.max(...candidates) : null
+    // Sort candidates by likelihood (prefer 5-6 digit numbers for modern cars)
+    candidates.sort((a, b) => {
+      const aDigits = a.toString().length
+      const bDigits = b.toString().length
+      
+      // Prefer 5-6 digit numbers
+      if (aDigits >= 5 && bDigits < 5) return -1
+      if (bDigits >= 5 && aDigits < 5) return 1
+      
+      // Then prefer higher numbers (odometers accumulate)
+      return b - a
+    })
+    
+    console.log('All odometer candidates:', candidates)
+    return candidates.length > 0 ? candidates[0] : null
   }
 
   // Capture odometer photo and extract reading
