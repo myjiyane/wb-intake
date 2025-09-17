@@ -53,8 +53,34 @@ const TABS: { key: TabKey; label: string; roles: ImageRole[] }[] = [
 
 type PhotoItem = { role: ImageRole; url?: string; object_key?: string }
 type PassportRecord = {
-  draft?: { images?: { items?: PhotoItem[] } }
-  sealed?: { images?: { items?: PhotoItem[] } }
+  draft?: { 
+    images?: { items?: PhotoItem[] }
+    tyres_mm?: {
+      fl?: number | null
+      fr?: number | null
+      rl?: number | null
+      rr?: number | null
+    }
+    dekra?: {
+      url?: string
+      inspection_ts?: string
+      site?: string
+    }
+  }
+  sealed?: { 
+    images?: { items?: PhotoItem[] }
+    tyres_mm?: {
+      fl?: number | null
+      fr?: number | null
+      rl?: number | null
+      rr?: number | null
+    }
+    dekra?: {
+      url?: string
+      inspection_ts?: string
+      site?: string
+    }
+  }
 }
 
 interface OdometerReading {
@@ -93,6 +119,8 @@ export default function Vin() {
   const [guideRole, setGuideRole] = useState<ImageRole | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('exterior')
 
+  const [dekraUrl, setDekraUrl] = useState<string>('')
+
   // Enhanced OCR states
   const [ocrScanning, setOcrScanning] = useState(false)
   const [lastVinScan, setLastVinScan] = useState<{
@@ -109,8 +137,18 @@ export default function Vin() {
   const [odometerJustification, setOdometerJustification] = useState('')
   const [odometerScanning, setOdometerScanning] = useState(false)
 
-  // Tyre depths (optional)
+  // Tyre depths (required by this screen)
   const [tyreDepths, setTyreDepths] = useState<TyreDepths>({ fl: '', fr: '', rl: '', rr: '' })
+
+  // Validation for required tyre fields
+  const allTyreFieldsCompleted = useMemo(() => {
+    const { fl, fr, rl, rr } = tyreDepths;
+    return fl !== '' && fr !== '' && rl !== '' && rr !== '' &&
+           typeof fl === 'number' && fl >= 0 && fl <= 12 &&
+           typeof fr === 'number' && fr >= 0 && fr <= 12 &&
+           typeof rl === 'number' && rl >= 0 && rl <= 12 &&
+           typeof rr === 'number' && rr >= 0 && rr <= 12;
+  }, [tyreDepths]);
 
   function absUrl(u?: string) {
     if (!u) return ''
@@ -132,6 +170,24 @@ export default function Vin() {
       ]
       setPhotos(items)
       setIsSealed(!!rec.sealed)
+
+      // Populate tyre depths from saved data
+      const savedTyres = rec.sealed?.tyres_mm || rec.draft?.tyres_mm
+      if (savedTyres) {
+        setTyreDepths({
+          fl: savedTyres.fl ?? '',
+          fr: savedTyres.fr ?? '',
+          rl: savedTyres.rl ?? '',
+          rr: savedTyres.rr ?? '',
+        })
+      }
+
+      // Populate DEKRA URL from saved data
+      const savedDekraUrl = rec.sealed?.dekra?.url || rec.draft?.dekra?.url
+      if (savedDekraUrl) {
+        setDekraUrl(savedDekraUrl)
+      }
+      
     } catch (e: any) {
       setError(e?.message || String(e))
     } finally {
@@ -159,13 +215,66 @@ export default function Vin() {
     }
     return candidates.length > 0 ? Math.max(...candidates) : null
   }
+   
+  function getTyreCondition(depth: number): { condition: string; color: string; bgColor: string } {
+    if (depth >= 8) return { condition: 'New', color: 'text-green-700', bgColor: 'bg-green-100 border-green-300' }
+    if (depth >= 4) return { condition: 'Good', color: 'text-green-600', bgColor: 'bg-green-50 border-green-200' }
+    if (depth >= 2) return { condition: 'Fair', color: 'text-yellow-600', bgColor: 'bg-yellow-50 border-yellow-200' }
+    return { condition: 'Replace Required', color: 'text-red-600', bgColor: 'bg-red-50 border-red-200' }
+  }
 
-  // Capture odometer photo and extract reading
+
+  function TyreInputField({ 
+    label, 
+    position, 
+    value, 
+    onChange, 
+    disabled 
+  }: {
+    label: string
+    position: 'fl' | 'fr' | 'rl' | 'rr'
+    value: number | ''
+    onChange: (value: number | '') => void
+    disabled: boolean
+  }) {
+    const isEmpty = value === null || value === undefined || value === ''
+    const condition = typeof value === 'number' ? getTyreCondition(value) : null
+
+    return (
+      <div className="space-y-2">
+        <label className="block text-sm font-medium text-slate-700">
+          {label} <span className="text-red-500">*</span>
+        </label>
+        <div className="relative">
+          <input
+            type="number"
+            min="0"
+            max="12"
+            step="0.1"
+            value={value || ''}
+            onChange={e => onChange(e.target.value ? Number(e.target.value) : '')}
+            placeholder="Enter depth"
+            className={`w-full border rounded-lg px-3 py-3 text-sm pr-8 ${
+              isEmpty 
+                ? 'border-red-300 bg-red-50' 
+                : condition 
+                  ? `border-green-300 ${condition.bgColor}`
+                  : 'border-green-300 bg-green-50'
+            }`}
+            disabled={disabled}
+            required
+          />
+          <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+        </div>
+      </div>
+    )
+  }
+  
   async function captureOdometer() {
     odometerFileRef.current?.click()
   }
 
-  // Handle odometer photo processing
+  
   async function onOdometerFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -247,7 +356,7 @@ export default function Vin() {
     }
   }
 
-  // Tyre depths save (optional)
+  // Tyre depths save
   async function saveTyreDepths() {
     const payload = {
       fl: typeof tyreDepths.fl === 'number' ? tyreDepths.fl : null,
@@ -513,8 +622,45 @@ export default function Vin() {
       {error && <div className="text-rose-700">Error: {error}</div>}
 
       {chk && (
-        <>
-          {/* Priority Section: Odometer Reading */}
+        <> 
+          {/* Summary header */}
+          <div className="rounded-xl border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-slate-600">
+                Lot Site <span className="font-mono">{chk.lot_id || lot}</span>
+              </div>
+              <div className="text-sm">
+              </div>
+              <button
+                onClick={load}
+                className="text-xs inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 hover:bg-slate-50"
+              >
+                <RefreshCcw className="w-3.5 h-3.5" /> Refresh
+              </button>
+            </div>
+            <ul className="mt-2 text-sm space-y-1">
+              <li className="flex items-center gap-2">
+                {chk.checklist.hasDekra
+                  ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  : <AlertTriangle className="w-4 h-4 text-amber-600" />}
+                <span>Report link: <b>{chk.checklist.hasDekra ? 'Present' : 'Missing'}</b></span>
+              </li>
+              <li className="flex items-center gap-2">
+                {chk.checklist.hasOdo
+                  ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  : <AlertTriangle className="w-4 h-4 text-amber-600" />}
+                <span>Odometer: <b>{chk.checklist.hasOdo ? 'Present' : 'Missing'}</b></span>
+              </li>
+              <li className="flex items-center gap-2">
+                {chk.checklist.photosOk
+                  ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  : <AlertTriangle className="w-4 h-4 text-amber-600" />}
+                <span>Photos: <b>{chk.checklist.presentCount}/{chk.checklist.requiredCount}</b></span>
+              </li>
+            </ul>
+          </div>
+ 
+          {/* Odometer Reading */}
           <div className="rounded-xl border-2 border-emerald-200 bg-emerald-50/50 p-4 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
@@ -642,74 +788,247 @@ export default function Vin() {
             )}
           </div>
 
-          {/* Summary header */}
-          <div className="rounded-xl border border-slate-200 bg-white p-3">
-            <div className="flex items-center justify-between">
-              <div className="text-sm text-slate-600">
-                Lot <span className="font-mono">{chk.lot_id || lot}</span>
+          {/*  Tyre Measurements section */}
+          <div className="rounded-xl border-2 border-orange-200 bg-orange-50/50 p-4 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center">
+                <Gauge className="w-4 h-4 text-white" />
               </div>
-              <button
-                onClick={load}
-                className="text-xs inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 hover:bg-slate-50"
-              >
-                <RefreshCcw className="w-3.5 h-3.5" /> Refresh
-              </button>
+              <div>
+                <h3 className="font-semibold text-slate-800">Tyre Tread Depths</h3>
+                <p className="text-xs text-slate-600">
+                  {isSealed ? 'Sealed measurements with condition assessment' : 'Measure with tread depth gauge (mm) - All required'}
+                </p>
+              </div>
             </div>
-            <ul className="mt-2 text-sm space-y-1">
-              <li className="flex items-center gap-2">
-                {chk.checklist.hasDekra
-                  ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  : <AlertTriangle className="w-4 h-4 text-amber-600" />}
-                <span>DEKRA link: <b>{chk.checklist.hasDekra ? 'Present' : 'Missing'}</b></span>
-              </li>
-              <li className="flex items-center gap-2">
-                {chk.checklist.hasOdo
-                  ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  : <AlertTriangle className="w-4 h-4 text-amber-600" />}
-                <span>Odometer: <b>{chk.checklist.hasOdo ? 'Present' : 'Missing'}</b></span>
-              </li>
-              <li className="flex items-center gap-2">
-                {chk.checklist.photosOk
-                  ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  : <AlertTriangle className="w-4 h-4 text-amber-600" />}
-                <span>Photos: <b>{chk.checklist.presentCount}/{chk.checklist.requiredCount}</b></span>
-              </li>
-            </ul>
-          </div>
 
-          {/* DEKRA Link Section */}
+            <div className="space-y-4">
+              {/* Visual tyre position guide */}
+              <div className="bg-white border border-slate-200 rounded-lg p-3">
+                <div className="text-xs text-slate-600 mb-2 text-center">Vehicle Position Guide</div>
+                <div className="grid grid-cols-2 gap-4 max-w-48 mx-auto">
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-800 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">FL</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Front Left</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-800 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">FR</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Front Right</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-600 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">RL</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Rear Left</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="w-16 h-20 bg-slate-600 rounded-lg mx-auto mb-1 flex items-center justify-center">
+                      <div className="text-white text-xs font-mono">RR</div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">Rear Right</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Vertical tyre depth input fields with condition display */}
+              <div className="space-y-3">
+                <TyreInputField
+                  label="Front Left Tyre"
+                  position="fl"
+                  value={tyreDepths.fl}
+                  onChange={(value) => setTyreDepths(prev => ({ ...prev, fl: value }))}
+                  disabled={isSealed}
+                />
+
+                <TyreInputField
+                  label="Front Right Tyre"
+                  position="fr"
+                  value={tyreDepths.fr}
+                  onChange={(value) => setTyreDepths(prev => ({ ...prev, fr: value }))}
+                  disabled={isSealed}
+                />
+
+                <TyreInputField
+                  label="Rear Left Tyre"
+                  position="rl"
+                  value={tyreDepths.rl}
+                  onChange={(value) => setTyreDepths(prev => ({ ...prev, rl: value }))}
+                  disabled={isSealed}
+                />
+
+                <TyreInputField
+                  label="Rear Right Tyre"
+                  position="rr"
+                  value={tyreDepths.rr}
+                  onChange={(value) => setTyreDepths(prev => ({ ...prev, rr: value }))}
+                  disabled={isSealed}
+                />
+              </div>
+
+              {/* Overall tyre condition summary for sealed passports */}
+              {isSealed && allTyreFieldsCompleted && (
+                <div className="bg-white border border-slate-200 rounded-lg p-3">
+                  <div className="text-sm font-medium text-slate-700 mb-2">Tyre Condition Summary</div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {Object.entries(tyreDepths).map(([pos, depth]) => {
+                      if (typeof depth !== 'number') return null
+                      const condition = getTyreCondition(depth)
+                      const posLabel = { fl: 'Front Left', fr: 'Front Right', rl: 'Rear Left', rr: 'Rear Right' }[pos]
+                      return (
+                        <div key={pos} className={`flex justify-between items-center p-2 rounded border ${condition.bgColor} ${condition.color}`}>
+                          <span className="font-medium">{posLabel}:</span>
+                          <span>{depth.toFixed(1)}mm ({condition.condition})</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  
+                  {/* Overall assessment */}
+                  <div className="mt-3 p-2 bg-slate-50 border border-slate-200 rounded text-xs">
+                    <div className="font-medium text-slate-700">Overall Assessment:</div>
+                    <div className="text-slate-600">
+                      {(() => {
+                        const depths = Object.values(tyreDepths).filter(d => typeof d === 'number') as number[]
+                        const minDepth = Math.min(...depths)
+                        const avgDepth = depths.reduce((sum, d) => sum + d, 0) / depths.length
+                        
+                        if (minDepth < 2) return '⚠️ Immediate replacement required'
+                        if (minDepth < 4) return '⚠️ Replacement recommended soon'
+                        if (avgDepth >= 8) return '✅ All tyres in excellent condition'
+                        return '✅ All tyres in good condition'
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Progress indicator - only show for unsealed */}
+              {!isSealed && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                    <span>Progress:</span>
+                    <span>{Object.values(tyreDepths).filter(v => v !== null && v !== undefined && v !== '').length}/4 completed</span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-2">
+                    <div 
+                      className="bg-orange-600 h-2 rounded-full transition-all duration-300"
+                      style={{ 
+                        width: `${(Object.values(tyreDepths).filter(v => v !== null && v !== undefined && v !== '').length / 4) * 100}%` 
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Quick reference guide */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <div className="text-xs text-blue-700">
+                  <div className="font-medium mb-1">Tread Depth Guide:</div>
+                  <div className="space-y-1">
+                    <div>• <strong>8-12mm:</strong> New tyre</div>
+                    <div>• <strong>4-8mm:</strong> Good condition</div>
+                    <div>• <strong>2-4mm:</strong> Fair condition</div>
+                    <div>• <strong>0-2mm:</strong> Replace required</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Save button - hide if sealed */}
+              {!isSealed && (
+                <>
+                  <button
+                    onClick={saveTyreDepths}
+                    disabled={
+                      saving === 'tyres' || 
+                      !allTyreFieldsCompleted
+                    }
+                    className={`w-full py-3 px-4 rounded-xl font-medium transition-colors ${
+                      allTyreFieldsCompleted && saving !== 'tyres'
+                        ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {saving === 'tyres' ? 'Saving...' : 'Save'}
+                  </button>
+
+                  {/* Validation message */}
+                  {!allTyreFieldsCompleted && (
+                    <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-2">
+                      All tyre measurements are required. Please complete all fields.
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Sealed status */}
+              {isSealed && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-center">
+                  <div className="text-sm text-emerald-700 flex items-center justify-center gap-2">
+                    <Shield className="w-4 h-4" />
+                    Tyre measurements sealed and validated
+                  </div>
+                </div>
+              )}
+            </div>
+          </div> 
+
+          {/* Report Link Section */}
           <div className="rounded-xl border border-slate-200 bg-white p-3">
             <div className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
               <LinkIcon className="w-4 h-4" />
-              DEKRA Report Link
+              Report Link
             </div>
-            <div className="flex gap-2">
-              <input
-                value={dekraUrlInput}
-                onChange={e => setDekraUrlInput(e.target.value)}
-                placeholder="https://dekra.example/report/123"
-                className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                disabled={isSealed || saving === 'dekra'}
-              />
-              <button
-                className="px-3 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50 hover:bg-slate-700"
-                disabled={isSealed || saving === 'dekra'}
-                onClick={async () => {
-                  try {
-                    setSaving('dekra')
-                    await setDekraUrl(vin, dekraUrlInput.trim())
-                    setDekraUrlInput('')
-                    await load()
-                  } catch (e:any) {
-                    alert(e?.message || String(e))
-                  } finally {
-                    setSaving(null)
-                  }
-                }}
-              >
-                {saving === 'dekra' ? 'Saving...' : 'Save'}
-              </button>
-            </div>
+            
+            {dekraUrl ? (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                <a 
+                  href={dekraUrl} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-800 underline text-sm break-all"
+                >
+                  {dekraUrl}
+                </a>
+              </div>
+            ) : !isSealed ? (
+              <div className="flex gap-2">
+                <input
+                  value={dekraUrlInput}
+                  onChange={e => setDekraUrlInput(e.target.value)}
+                  placeholder="https://dekra.example/report/123"
+                  className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  disabled={saving === 'dekra'}
+                />
+                <button
+                  className="px-3 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50 hover:bg-slate-700"
+                  disabled={saving === 'dekra'}
+                  onClick={async () => {
+                    try {
+                      setSaving('dekra')
+                      await setDekraUrl(vin, dekraUrlInput.trim())
+                      setDekraUrlInput('')
+                      await load()
+                    } catch (e:any) {
+                      alert(e?.message || String(e))
+                    } finally {
+                      setSaving(null)
+                    }
+                  }}
+                >
+                  {saving === 'dekra' ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            ) : (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="text-sm text-slate-600">
+                  No report link available
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Photo Documentation Section */}
@@ -806,52 +1125,6 @@ export default function Vin() {
                     )
                   })}
                 </div>
-
-                {/* Optional: Tyre depths quick capture (when on Wheels tab) */}
-                {activeTab === 'wheels' && (
-                  <div className="mt-3 rounded-lg border border-slate-200 p-3">
-                    <div className="text-sm font-medium text-slate-700 mb-2">Tyre tread depths (mm) — optional</div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="number" min={0} step="0.1" placeholder="Front Left"
-                        value={tyreDepths.fl}
-                        onChange={e => setTyreDepths(d => ({ ...d, fl: e.target.value === '' ? '' : Number(e.target.value) }))}
-                        className="border rounded-lg px-3 py-2 text-sm"
-                        disabled={isSealed}
-                      />
-                      <input
-                        type="number" min={0} step="0.1" placeholder="Front Right"
-                        value={tyreDepths.fr}
-                        onChange={e => setTyreDepths(d => ({ ...d, fr: e.target.value === '' ? '' : Number(e.target.value) }))}
-                        className="border rounded-lg px-3 py-2 text-sm"
-                        disabled={isSealed}
-                      />
-                      <input
-                        type="number" min={0} step="0.1" placeholder="Rear Left"
-                        value={tyreDepths.rl}
-                        onChange={e => setTyreDepths(d => ({ ...d, rl: e.target.value === '' ? '' : Number(e.target.value) }))}
-                        className="border rounded-lg px-3 py-2 text-sm"
-                        disabled={isSealed}
-                      />
-                      <input
-                        type="number" min={0} step="0.1" placeholder="Rear Right"
-                        value={tyreDepths.rr}
-                        onChange={e => setTyreDepths(d => ({ ...d, rr: e.target.value === '' ? '' : Number(e.target.value) }))}
-                        className="border rounded-lg px-3 py-2 text-sm"
-                        disabled={isSealed}
-                      />
-                    </div>
-                    <div className="mt-2 text-right">
-                      <button
-                        onClick={saveTyreDepths}
-                        disabled={isSealed || saving === 'tyres'}
-                        className="px-3 py-2 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50 hover:bg-slate-700"
-                      >
-                        {saving === 'tyres' ? 'Saving...' : 'Save Tyre Depths'}
-                      </button>
-                    </div>
-                  </div>
-                )}
 
                 {allRolesCaptured && (
                   <div className="text-center text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3 mt-3">
