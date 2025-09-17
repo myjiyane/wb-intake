@@ -406,3 +406,24 @@ export async function setOdometer(vin: string, km: number, source: 'manual' | 'd
     body: JSON.stringify({ vin, odometer_km: Math.floor(km), odometer_source: source }),
   });
 }
+
+export async function setTyreDepths(vin: string, depths: {
+  fl: number | null;
+  fr: number | null;
+  rl: number | null;
+  rr: number | null;
+}) {
+  if (!vin) throw new Error('VIN required');
+  
+  // Validate measurements
+  const validDepth = (val: number | null) => val === null || (typeof val === 'number' && val >= 0 && val <= 12);
+  if (!validDepth(depths.fl) || !validDepth(depths.fr) || !validDepth(depths.rl) || !validDepth(depths.rr)) {
+    throw new Error('Invalid tyre measurements (must be 0-12mm or null)');
+  }
+
+  return j(`${BASE}/intake/tyres`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vin, tyres_mm: depths }),
+  });
+}

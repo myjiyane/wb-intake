@@ -12,11 +12,12 @@ import {
   setOdometer,
   ocrVinFromImage,
   isValidVin,
-  formatVin
+  formatVin,
+  setTyreDepths as setTyreDepthsApi,
 } from '../lib/api'
 import type { Checklist, ImageRole } from '../types'
-import { 
-  Camera, RefreshCcw, CheckCircle2, AlertTriangle, Image as Img, 
+import {
+  Camera, RefreshCcw, CheckCircle2, AlertTriangle,
   Link as LinkIcon, Scan, Shield, Eye, Zap, Gauge, Edit3, Clock
 } from 'lucide-react'
 
@@ -66,6 +67,8 @@ interface OdometerReading {
   adjustmentReason?: string
 }
 
+type TyreDepths = { fl: number | ''; fr: number | ''; rl: number | ''; rr: number | '' }
+
 export default function Vin() {
   const { vin = '' } = useParams()
   const [sp] = useSearchParams()
@@ -106,21 +109,8 @@ export default function Vin() {
   const [odometerJustification, setOdometerJustification] = useState('')
   const [odometerScanning, setOdometerScanning] = useState(false)
 
-  // Tyre depth states
-  const [tyreDepths, setTyreDepths] = useState<{
-    fl: number | null
-    fr: number | null
-    rl: number | null
-    rr: number | null
-  }>({
-    fl: null,
-    fr: null,
-    rl: null,
-    rr: null
-  })
-
-  // Check if any tyre data has been entered
-  const hasTyreData = Object.values(tyreDepths).some(depth => depth !== null && depth !== undefined)
+  // Tyre depths (optional)
+  const [tyreDepths, setTyreDepths] = useState<TyreDepths>({ fl: '', fr: '', rl: '', rr: '' })
 
   function absUrl(u?: string) {
     if (!u) return ''
@@ -151,27 +141,22 @@ export default function Vin() {
 
   // Extract odometer reading from OCR text
   function extractOdometerFromText(text: string): number | null {
-    // Look for sequences of 3-6 digits that could be odometer readings
     const patterns = [
-      /(?:odometer|mileage|miles|km|kilometers)[\s:]*([0-9]{3,6})/i,
-      /\b([0-9]{3,6})\s*(?:km|miles|mi)\b/i,
-      /\b([0-9]{1,3}[,.]?[0-9]{3,6})\b/g // General number patterns
+      /(?:odometer|mileage|miles|km|kilometers)[\s:]*([0-9]{3,6})/gi,
+      /\b([0-9]{3,6})\s*(?:km|miles|mi)\b/gi,
+      /\b([0-9]{1,3}[,.]?[0-9]{3,6})\b/g
     ]
-    
     const candidates: number[] = []
-    
     for (const pattern of patterns) {
       const matches = text.matchAll(pattern)
       for (const match of matches) {
-        const numStr = match[1].replace(/[,.](?=\d{3})/g, '') // Remove thousands separators
+        const numStr = (match[1] || '').replace(/[,.](?=\d{3})/g, '')
         const num = parseInt(numStr, 10)
-        if (num >= 100 && num <= 999999) { // Reasonable odometer range
+        if (!Number.isNaN(num) && num >= 100 && num <= 999999) {
           candidates.push(num)
         }
       }
     }
-    
-    // Return the most likely candidate (highest number, as odometers accumulate)
     return candidates.length > 0 ? Math.max(...candidates) : null
   }
 
@@ -184,34 +169,26 @@ export default function Vin() {
   async function onOdometerFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    
     try {
       setOdometerScanning(true)
-      
-      // Process with OCR
       const result = await ocrVinFromImage(file, {
         compress: true,
-        onProgress: (stage) => console.log(`Odometer OCR ${stage}...`)
+        onProgress: (stage: string) => console.log(`Odometer OCR ${stage}...`)
       })
-      
-      const extractedKm = extractOdometerFromText(result.fullText)
-      
-      // Create photo URL for display
+      const extractedKm = extractOdometerFromText(result.fullText || '')
       const photoUrl = URL.createObjectURL(file)
-      
       const reading: OdometerReading = {
         km: extractedKm,
         confidence: result.confidence,
-        rawText: result.fullText,
+        rawText: result.fullText || '',
         photo: photoUrl,
         timestamp: Date.now(),
         manuallyAdjusted: false
       }
-      
       setOdometerReading(reading)
       setOdometerInput(extractedKm || '')
       setOdometerJustification('')
-      
+
       // Also upload the dash_odo photo to the regular photo collection
       setUploading('dash_odo')
       try {
@@ -222,8 +199,8 @@ export default function Vin() {
       } finally {
         setUploading(null)
       }
-      
-      e.target.value = '' // Reset file input
+
+      e.target.value = ''
     } catch (error: any) {
       alert(`Odometer scanning failed: ${error.message}`)
     } finally {
@@ -235,51 +212,18 @@ export default function Vin() {
   function handleOdometerAdjustment(value: number | string) {
     const numValue = typeof value === 'string' ? (value === '' ? '' : Number(value)) : value
     setOdometerInput(numValue)
-    
     if (odometerReading && numValue !== odometerReading.km) {
-      setOdometerReading({
-        ...odometerReading,
-        manuallyAdjusted: true
-      })
+      setOdometerReading({ ...odometerReading, manuallyAdjusted: true })
     }
   }
 
-  // Save tyre depths
-  async function saveTyreDepths() {
-    try {
-      setSaving('tyres')
-      
-      // You'll need to add this API function to your api.ts file
-      // await setTyreDepths(vin, tyreDepths)
-      
-      // For now, let's use a generic API call
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/intake/init`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          vin, 
-          tyres_mm: tyreDepths 
-        })
-      })
-      
-      if (!response.ok) {
-        throw new Error(`Failed to save tyre depths: ${response.status}`)
-      }
-      
-      await load() // Refresh the data
-    } catch (e: any) {
-      alert(e?.message || String(e))
-    } finally {
-      setSaving(null)
-    }
-  }
+  // Save odometer reading
+  async function saveOdometer() {
     const finalReading = typeof odometerInput === 'number' ? odometerInput : null
     if (!finalReading || finalReading < 0) {
       alert('Please enter a valid odometer reading')
       return
     }
-
-    // Log manual adjustments for audit
     if (odometerReading?.manuallyAdjusted) {
       console.log('Odometer Manual Adjustment Logged:', {
         originalExtracted: odometerReading.km,
@@ -292,7 +236,6 @@ export default function Vin() {
         photo: odometerReading.photo ? 'attached' : 'none'
       })
     }
-
     try {
       setSaving('odo')
       await setOdometer(vin, finalReading, 'ocr')
@@ -303,13 +246,32 @@ export default function Vin() {
       setSaving(null)
     }
   }
-  
+
+  // Tyre depths save (optional)
+  async function saveTyreDepths() {
+    const payload = {
+      fl: typeof tyreDepths.fl === 'number' ? tyreDepths.fl : null,
+      fr: typeof tyreDepths.fr === 'number' ? tyreDepths.fr : null,
+      rl: typeof tyreDepths.rl === 'number' ? tyreDepths.rl : null,
+      rr: typeof tyreDepths.rr === 'number' ? tyreDepths.rr : null,
+    }
+    try {
+      setSaving('tyres')
+      await setTyreDepthsApi(vin, payload)
+      await load()
+    } catch (e: any) {
+      alert(e?.message || String(e))
+    } finally {
+      setSaving(null)
+    }
+  }
+
   useEffect(() => {
-    if (!guideRole) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
-  }, [guideRole]);
+    if (!guideRole) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [guideRole])
 
   useEffect(() => { load() }, [vin])
 
@@ -318,21 +280,21 @@ export default function Vin() {
     photos.forEach(p => m.set(p.role, p))
     return m
   }, [photos])
-  
-  const missingSet = useMemo(() => new Set(chk?.checklist.missing || []), [chk]);
+
+  const missingSet = useMemo(() => new Set(chk?.checklist.missing || []), [chk])
 
   const missingCountByTab = useMemo(() => {
-    const map = new Map<TabKey, number>();
+    const map = new Map<TabKey, number>()
     for (const t of TABS) {
-      const count = t.roles.reduce((acc, r) => acc + (missingSet.has(r) ? 1 : 0), 0);
-      map.set(t.key, count);
+      const count = t.roles.reduce((acc, r) => acc + (missingSet.has(r) ? 1 : 0), 0)
+      map.set(t.key, count)
     }
-    return map;
-  }, [missingSet]);
+    return map
+  }, [missingSet])
 
   const allRolesCaptured = chk
     ? chk.checklist.presentCount >= chk.checklist.requiredCount && chk.checklist.requiredCount > 0
-    : false;
+    : false
 
   function rolePretty(r: ImageRole) { return r.replace(/_/g, ' ') }
 
@@ -354,10 +316,9 @@ export default function Vin() {
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file || !activeRole) return
-    
+
     setUploading(activeRole)
     try {
-      // Check if this photo type commonly contains VINs
       const canScanVin = ROLE_GUIDE[activeRole]?.canScanVin
       if (canScanVin && !isSealed) {
         const shouldOcr = confirm('This photo may contain a visible VIN. Scan for verification?')
@@ -366,9 +327,8 @@ export default function Vin() {
             setOcrScanning(true)
             const result = await ocrVinFromImage(file, {
               compress: true,
-              onProgress: (stage) => console.log(`VIN OCR ${stage}...`)
+              onProgress: (stage: string) => console.log(`VIN OCR ${stage}...`)
             })
-            
             if (result.vin) {
               const formatted = formatVin(result.vin)
               setLastVinScan({
@@ -378,13 +338,11 @@ export default function Vin() {
                 valid: result.vinValid,
                 timestamp: Date.now()
               })
-              
               setTimeout(() => {
                 const matches = formatted === vin
                 const message = `VIN detected: ${formatted}\nConfidence: ${result.confidence.toFixed(1)}%\n\n${
                   matches ? '✓ Matches expected VIN' : '⚠ Does NOT match expected VIN'
                 }\nExpected: ${vin}`
-                
                 alert(message)
               }, 1000)
             }
@@ -396,7 +354,6 @@ export default function Vin() {
         }
       }
 
-      // Regular photo upload
       await uploadPhotoDev(vin, activeRole, file)
       await load()
     } catch (err: any) {
@@ -413,19 +370,16 @@ export default function Vin() {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'image/*'
-    input.capture = 'environment'
-    
+    ;(input as any).capture = 'environment'
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0]
       if (!file) return
-      
       try {
         setOcrScanning(true)
         const result = await ocrVinFromImage(file, {
           compress: true,
-          onProgress: (stage) => console.log(`VIN verification ${stage}...`)
+          onProgress: (stage: string) => console.log(`VIN verification ${stage}...`)
         })
-        
         setLastVinScan({
           vin: result.vin,
           confidence: result.confidence,
@@ -433,13 +387,11 @@ export default function Vin() {
           valid: result.vinValid || false,
           timestamp: Date.now()
         })
-        
         const message = result.vin
           ? `VIN: ${result.vin}\nConfidence: ${result.confidence.toFixed(1)}%\nValid: ${result.vinValid ? 'Yes' : 'No'}\n\n${
               result.vin === vin ? '✓ Matches expected!' : '⚠ Does NOT match expected VIN'
             }`
           : 'No VIN detected. Try windshield, dashboard, or engine bay VIN plate.'
-        
         alert(message)
       } catch (error: any) {
         alert(`VIN scanning failed: ${error.message}`)
@@ -447,7 +399,6 @@ export default function Vin() {
         setOcrScanning(false)
       }
     }
-    
     input.click()
   }
 
@@ -460,14 +411,13 @@ export default function Vin() {
     onCancel: () => void;
     onProceed: () => void;
   }) {
-    const g = ROLE_GUIDE[role];
-    const canScanVin = g?.canScanVin && !isSealed;
-    
+    const g = ROLE_GUIDE[role]
+    const canScanVin = g?.canScanVin && !isSealed
     return (
       <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
-          role="dialog" aria-modal="true" onClick={onCancel}>
+           role="dialog" aria-modal="true" onClick={onCancel}>
         <div className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-xl overflow-hidden"
-            onClick={e => e.stopPropagation()}>
+             onClick={e => e.stopPropagation()}>
           <div className="p-4 border-b border-slate-200">
             <div className="text-sm font-semibold text-slate-800">{g?.title || role.replace(/_/g,' ')}</div>
             <div className="text-xs text-slate-500 mt-1">{g?.hint}</div>
@@ -478,11 +428,11 @@ export default function Vin() {
             )}
           </div>
           <div className="aspect-video w-full bg-slate-100">
-            <img 
-              src={g?.img} 
-              alt={g?.title} 
-              className="w-full h-full object-cover" 
-              onError={(e:any)=>{ e.currentTarget.style.display='none'; }} 
+            <img
+              src={g?.img}
+              alt={g?.title}
+              className="w-full h-full object-cover"
+              onError={(e:any)=>{ e.currentTarget.style.display='none'; }}
             />
           </div>
           <div className="p-4 space-y-2">
@@ -491,10 +441,10 @@ export default function Vin() {
               📷 Take {g?.title} Photo
             </button>
             {canScanVin && (
-              <button 
+              <button
                 onClick={() => {
-                  onCancel();
-                  scanVinFromPhoto();
+                  onCancel()
+                  scanVinFromPhoto()
                 }}
                 className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 text-white py-2 text-sm font-medium">
                 🔍 Scan VIN Only
@@ -525,7 +475,7 @@ export default function Vin() {
                 {isValidVin(vin) ? 'Valid VIN format' : 'Invalid check digit'}
               </span>
             </div>
-            
+
             {lastVinScan && (
               <div className={`mt-2 text-xs px-2 py-1 rounded-md border flex items-center gap-2 ${
                 lastVinScan.valid && lastVinScan.vin === vin
@@ -538,7 +488,7 @@ export default function Vin() {
               </div>
             )}
           </div>
-          
+
           <button
             onClick={scanVinFromPhoto}
             disabled={ocrScanning || isSealed}
@@ -564,148 +514,7 @@ export default function Vin() {
 
       {chk && (
         <>
-          {/* Priority Section: Tyre Measurements */}
-          <div className="rounded-xl border-2 border-orange-200 bg-orange-50/50 p-4 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center">
-                <Gauge className="w-4 h-4 text-white" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-slate-800">Tyre Tread Depths</h3>
-                <p className="text-xs text-slate-600">Measure with tread depth gauge (mm)</p>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {/* Visual tyre position guide */}
-              <div className="bg-white border border-slate-200 rounded-lg p-3">
-                <div className="text-xs text-slate-600 mb-2 text-center">Vehicle Position Guide</div>
-                <div className="grid grid-cols-2 gap-4 max-w-48 mx-auto">
-                  <div className="text-center">
-                    <div className="w-16 h-20 bg-slate-800 rounded-lg mx-auto mb-1 flex items-center justify-center">
-                      <div className="text-white text-xs font-mono">FL</div>
-                    </div>
-                    <div className="text-[10px] text-slate-500">Front Left</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="w-16 h-20 bg-slate-800 rounded-lg mx-auto mb-1 flex items-center justify-center">
-                      <div className="text-white text-xs font-mono">FR</div>
-                    </div>
-                    <div className="text-[10px] text-slate-500">Front Right</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="w-16 h-20 bg-slate-600 rounded-lg mx-auto mb-1 flex items-center justify-center">
-                      <div className="text-white text-xs font-mono">RL</div>
-                    </div>
-                    <div className="text-[10px] text-slate-500">Rear Left</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="w-16 h-20 bg-slate-600 rounded-lg mx-auto mb-1 flex items-center justify-center">
-                      <div className="text-white text-xs font-mono">RR</div>
-                    </div>
-                    <div className="text-[10px] text-slate-500">Rear Right</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Tyre depth input grid */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700">Front Left (FL)</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min="0"
-                      max="12"
-                      step="0.1"
-                      value={tyreDepths.fl || ''}
-                      onChange={e => setTyreDepths(prev => ({ ...prev, fl: e.target.value ? Number(e.target.value) : null }))}
-                      placeholder="0.0"
-                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
-                      disabled={isSealed}
-                    />
-                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700">Front Right (FR)</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min="0"
-                      max="12"
-                      step="0.1"
-                      value={tyreDepths.fr || ''}
-                      onChange={e => setTyreDepths(prev => ({ ...prev, fr: e.target.value ? Number(e.target.value) : null }))}
-                      placeholder="0.0"
-                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
-                      disabled={isSealed}
-                    />
-                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700">Rear Left (RL)</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min="0"
-                      max="12"
-                      step="0.1"
-                      value={tyreDepths.rl || ''}
-                      onChange={e => setTyreDepths(prev => ({ ...prev, rl: e.target.value ? Number(e.target.value) : null }))}
-                      placeholder="0.0"
-                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
-                      disabled={isSealed}
-                    />
-                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700">Rear Right (RR)</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min="0"
-                      max="12"
-                      step="0.1"
-                      value={tyreDepths.rr || ''}
-                      onChange={e => setTyreDepths(prev => ({ ...prev, rr: e.target.value ? Number(e.target.value) : null }))}
-                      placeholder="0.0"
-                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm pr-8"
-                      disabled={isSealed}
-                    />
-                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Quick reference guide */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <div className="text-xs text-blue-700">
-                  <div className="font-medium mb-1">Tread Depth Guide:</div>
-                  <div className="space-y-1">
-                    <div>• <strong>8-12mm:</strong> New tyre</div>
-                    <div>• <strong>4-8mm:</strong> Good condition</div>
-                    <div>• <strong>2-4mm:</strong> Fair condition</div>
-                    <div>• <strong>0-2mm:</strong> Replace required</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Save button */}
-              <button
-                onClick={saveTyreDepths}
-                disabled={saving === 'tyres' || isSealed || !hasTyreData}
-                className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3 px-4 rounded-xl font-medium disabled:opacity-50 transition-colors"
-              >
-                {saving === 'tyres' ? 'Saving...' : 'Save Tyre Measurements'}
-              </button>
-            </div>
-          </div>
+          {/* Priority Section: Odometer Reading */}
           <div className="rounded-xl border-2 border-emerald-200 bg-emerald-50/50 p-4 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
@@ -740,7 +549,7 @@ export default function Vin() {
                     </>
                   )}
                 </button>
-                
+
                 <div className="text-xs text-slate-500 text-center">
                   Automatic reading extraction prevents manual entry errors
                 </div>
@@ -750,13 +559,13 @@ export default function Vin() {
                 {/* Captured photo and extracted reading */}
                 <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
                   {odometerReading.photo && (
-                    <img 
-                      src={odometerReading.photo} 
-                      alt="Odometer" 
+                    <img
+                      src={odometerReading.photo}
+                      alt="Odometer"
                       className="w-full h-32 object-cover"
                     />
                   )}
-                  
+
                   <div className="p-3 space-y-2">
                     <div className="flex items-center justify-between text-xs text-slate-600">
                       <span>Extracted Reading:</span>
@@ -765,7 +574,7 @@ export default function Vin() {
                         {odometerReading.confidence.toFixed(0)}% confidence
                       </span>
                     </div>
-                    
+
                     <div className="flex items-center gap-2">
                       <input
                         type="number"
@@ -776,8 +585,8 @@ export default function Vin() {
                           ${odometerReading.manuallyAdjusted ? 'border-amber-300 bg-amber-50 ring-2 ring-amber-200' : 'border-slate-300'}
                         `}
                         disabled={isSealed}
-                        min="0"
-                        max="999999"
+                        min={0}
+                        max={999999}
                       />
                       <span className="text-sm text-slate-600 font-medium">km</span>
                     </div>
@@ -794,7 +603,7 @@ export default function Vin() {
                             </div>
                           </div>
                         </div>
-                        
+
                         <textarea
                           value={odometerJustification}
                           onChange={e => setOdometerJustification(e.target.value)}
@@ -805,7 +614,7 @@ export default function Vin() {
                         />
                       </div>
                     )}
-                    
+
                     <div className="flex gap-2">
                       <button
                         onClick={saveOdometer}
@@ -814,7 +623,7 @@ export default function Vin() {
                       >
                         {saving === 'odo' ? 'Saving...' : 'Save Reading'}
                       </button>
-                      
+
                       <button
                         onClick={() => {
                           setOdometerReading(null)
@@ -865,11 +674,10 @@ export default function Vin() {
                   : <AlertTriangle className="w-4 h-4 text-amber-600" />}
                 <span>Photos: <b>{chk.checklist.presentCount}/{chk.checklist.requiredCount}</b></span>
               </li>
-              </li>
             </ul>
           </div>
 
-          {/* DEKRA Link Section (Lower Priority) */}
+          {/* DEKRA Link Section */}
           <div className="rounded-xl border border-slate-200 bg-white p-3">
             <div className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
               <LinkIcon className="w-4 h-4" />
@@ -921,8 +729,8 @@ export default function Vin() {
             {/* Tabs */}
             <div className="mb-3 flex gap-2 overflow-x-auto no-scrollbar">
               {TABS.map(t => {
-                const missing = missingCountByTab.get(t.key) || 0;
-                const isActive = activeTab === t.key;
+                const missing = missingCountByTab.get(t.key) || 0
+                const isActive = activeTab === t.key
                 return (
                   <button
                     key={t.key}
@@ -942,7 +750,7 @@ export default function Vin() {
                       </span>
                     )}
                   </button>
-                );
+                )
               })}
             </div>
 
@@ -950,11 +758,11 @@ export default function Vin() {
               <>
                 <div className="grid grid-cols-3 gap-2">
                   {TABS.find(t => t.key === activeTab)!.roles.map((role) => {
-                    const existing = presentByRole.get(role);
-                    const disabled = isSealed || Boolean(uploading);
-                    const hasPhoto = !!existing?.url || !!existing?.object_key;
-                    const src = existing?.url ?? (existing?.object_key ? `/uploads/${existing.object_key}` : undefined);
-                    const canScanVin = ROLE_GUIDE[role]?.canScanVin;
+                    const existing = presentByRole.get(role)
+                    const disabled = isSealed || Boolean(uploading)
+                    const hasPhoto = !!existing?.url || !!existing?.object_key
+                    const src = existing?.url ?? (existing?.object_key ? `/uploads/${existing.object_key}` : undefined)
+                    const canScanVin = ROLE_GUIDE[role]?.canScanVin
 
                     return (
                       <button
@@ -995,9 +803,55 @@ export default function Vin() {
                           <span className="absolute top-1 right-1 inline-flex items-center justify-center w-5 h-5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-[10px]">!</span>
                         )}
                       </button>
-                    );
+                    )
                   })}
                 </div>
+
+                {/* Optional: Tyre depths quick capture (when on Wheels tab) */}
+                {activeTab === 'wheels' && (
+                  <div className="mt-3 rounded-lg border border-slate-200 p-3">
+                    <div className="text-sm font-medium text-slate-700 mb-2">Tyre tread depths (mm) — optional</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="number" min={0} step="0.1" placeholder="Front Left"
+                        value={tyreDepths.fl}
+                        onChange={e => setTyreDepths(d => ({ ...d, fl: e.target.value === '' ? '' : Number(e.target.value) }))}
+                        className="border rounded-lg px-3 py-2 text-sm"
+                        disabled={isSealed}
+                      />
+                      <input
+                        type="number" min={0} step="0.1" placeholder="Front Right"
+                        value={tyreDepths.fr}
+                        onChange={e => setTyreDepths(d => ({ ...d, fr: e.target.value === '' ? '' : Number(e.target.value) }))}
+                        className="border rounded-lg px-3 py-2 text-sm"
+                        disabled={isSealed}
+                      />
+                      <input
+                        type="number" min={0} step="0.1" placeholder="Rear Left"
+                        value={tyreDepths.rl}
+                        onChange={e => setTyreDepths(d => ({ ...d, rl: e.target.value === '' ? '' : Number(e.target.value) }))}
+                        className="border rounded-lg px-3 py-2 text-sm"
+                        disabled={isSealed}
+                      />
+                      <input
+                        type="number" min={0} step="0.1" placeholder="Rear Right"
+                        value={tyreDepths.rr}
+                        onChange={e => setTyreDepths(d => ({ ...d, rr: e.target.value === '' ? '' : Number(e.target.value) }))}
+                        className="border rounded-lg px-3 py-2 text-sm"
+                        disabled={isSealed}
+                      />
+                    </div>
+                    <div className="mt-2 text-right">
+                      <button
+                        onClick={saveTyreDepths}
+                        disabled={isSealed || saving === 'tyres'}
+                        className="px-3 py-2 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-50 hover:bg-slate-700"
+                      >
+                        {saving === 'tyres' ? 'Saving...' : 'Save Tyre Depths'}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {allRolesCaptured && (
                   <div className="text-center text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3 mt-3">
@@ -1017,20 +871,20 @@ export default function Vin() {
               ref={fileRef}
               type="file"
               accept="image/*"
-              capture="environment"
+              {...({ capture: 'environment' } as any)}
               className="hidden"
               onChange={onFile}
             />
-            
+
             <input
               ref={odometerFileRef}
               type="file"
               accept="image/*"
-              capture="environment"
+              {...({ capture: 'environment' } as any)}
               className="hidden"
               onChange={onOdometerFile}
             />
-            
+
             {guideRole && (
               <GuidanceModal
                 role={guideRole}
@@ -1043,17 +897,16 @@ export default function Vin() {
               />
             )}
 
-            {/* Upload progress */}
             {(uploading || ocrScanning || odometerScanning) && (
               <div className="mt-2 text-xs text-slate-600 inline-flex items-center gap-2">
                 <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
-                {ocrScanning ? 'Reading VIN from photo...' : 
+                {ocrScanning ? 'Reading VIN from photo...' :
                  odometerScanning ? 'Processing odometer...' :
                  `${rolePretty(uploading!)}: uploading...`}
               </div>
             )}
           </div>
- 
+
           {/* Ready / Sealed status */}
           <div className={`rounded-xl p-3 border ${
             isSealed
