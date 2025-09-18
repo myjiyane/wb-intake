@@ -18,6 +18,20 @@ export interface OcrResult {
   fromCache: boolean;
 }
 
+
+export interface ocrOdoResult {
+  ok: boolean;
+  km: number | null;
+  unit: 'km' | null;
+  candidates: { value: number; score: number }[];
+  confidence: number;
+  processingTime: number;
+  textExtracted: boolean;
+  totalBlocks: number;
+  lineCount: number;
+  fromCache: boolean;
+}
+
 // OCR error types for better error handling
 export interface OcrError {
   error: string;
@@ -119,26 +133,121 @@ export async function compressImage(
   });
 }
 
-// Validate image before uploading
+
 export function validateImageFile(file: File): { valid: boolean; error?: string } {
-  const maxSize = 5 * 1024 * 1024; // 5MB
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/tiff'];
-
-  if (!allowedTypes.includes(file.type)) {
-    return {
-      valid: false,
-      error: `Invalid file type. Please use: ${allowedTypes.map(t => t.split('/')[1].toUpperCase()).join(', ')}`
-    };
+  if (!file) {
+    return { valid: false, error: 'No file selected' }
   }
 
-  if (file.size > maxSize) {
-    return {
-      valid: false,
-      error: `File too large. Maximum size is ${maxSize / 1024 / 1024}MB`
-    };
+  if (file.size === 0) {
+    return { valid: false, error: 'File is empty. Please try taking the photo again.' }
   }
 
-  return { valid: true };
+  if (file.size > 15 * 1024 * 1024) {
+    return { valid: false, error: 'Photo is too large (max 15MB). Please try again.' }
+  }
+
+  if (!file.type.startsWith('image/')) {
+    return { valid: false, error: 'Invalid file type. Only images are allowed.' }
+  }
+
+  // Check for common PWA camera issues
+  if (file.type === 'image/jpeg' && file.size < 1000) {
+    return { valid: false, error: 'Photo seems corrupted. Please try taking it again.' }
+  }
+
+  return { valid: true }
+}
+
+
+// Enhanced OCR function with better error handling and progress
+export async function ocrOdoFromImage(
+  file: File,
+  options: {
+    compress?: boolean;
+    compressionOptions?: ImageCompressionOptions;
+    onProgress?: (stage: 'validating' | 'compressing' | 'uploading' | 'processing') => void;
+  } = {}
+): Promise<ocrOdoResult> {
+  const { compress = true, compressionOptions, onProgress } = options;
+
+  try {
+    onProgress?.('validating');
+
+    // Validate the image file
+    const validation = validateImageFile(file);
+    if (!validation.valid) {
+      throw new Error(validation.error);
+    }
+
+    let processedFile = file;
+
+    // Compress image for better upload/processing
+    if (compress) {
+      onProgress?.('compressing');
+      processedFile = await compressImage(file, compressionOptions);
+      console.log(`Image compressed: ${file.size} → ${processedFile.size} bytes`);
+    }
+
+    onProgress?.('uploading');
+
+    const form = new FormData();
+    form.append("file", processedFile);
+    const url = `${BASE}/ocr/odometer`;
+    const headers: Record<string, string> = {};
+    if (API_KEY) headers["X-Api-Key"] = API_KEY;
+
+    const startTime = Date.now();
+    const res = await fetch(url, { 
+      method: "POST", 
+      headers, 
+      body: form 
+    });
+
+    if (!res.ok) {
+      let errorMessage = `OCR failed (${res.status})`;
+      
+      try {
+        const errorBody = await res.json() as OcrError;
+        
+        // Provide user-friendly error messages
+        switch (errorBody.error) {
+          case 'aws_not_configured':
+            errorMessage = 'OCR service is not configured. Please contact support.';
+            break;
+          case 'invalid_image':
+            errorMessage = 'Invalid image format or corrupted file. Please try a different photo.';
+            break;
+          case 'file_too_large':
+            errorMessage = errorBody.message || 'Image file is too large. Please use a smaller image.';
+            break;
+          case 'rate_limit_exceeded':
+            errorMessage = 'Too many requests. Please wait a moment and try again.';
+            break;
+          case 'textract_failed':
+            errorMessage = 'OCR processing failed. Please try again with a clearer photo.';
+            break;
+          default:
+            errorMessage = errorBody.message || errorMessage;
+        }
+      } catch {
+        // Fallback to status text if JSON parsing fails
+        errorMessage = await res.text().catch(() => `${res.status} ${res.statusText}`);
+      }
+
+      throw new Error(errorMessage);
+    }
+
+    onProgress?.('processing');
+
+    const result = await res.json() as ocrOdoResult;
+
+    return result;
+
+  } catch (error) {
+    console.error('OCR Error:', error);
+    throw error;
+  }
 }
 
 // Enhanced OCR function with better error handling and progress
@@ -332,12 +441,106 @@ export async function seedRequiredPhotos(vin: string, lotId: string, roles: Imag
   });
 }
 
-export async function uploadPhotoDev(vin: string, role: ImageRole, file: File, _onProgress?: (p: number) => void) {
-  const form = new FormData();
-  form.append('vin', vin);
-  form.append('role', role);
-  form.append('file', file);
-  return j(`${BASE}/intake/photos/upload`, { method: 'POST', body: form });
+// Enhanced uploadPhotoDev function for src/lib/api.ts
+// Replace existing uploadPhotoDev function with this improved version
+
+export async function uploadPhotoDev(
+  vin: string, 
+  role: ImageRole, 
+  file: File, 
+  onProgress?: (p: number) => void
+) {
+  // Validate file before upload
+  if (!file || file.size === 0) {
+    throw new Error('Invalid file: No file data')
+  }
+
+  // PWA Camera File Validation
+  if (file.size > 15 * 1024 * 1024) { // 15MB limit
+    throw new Error('File too large: Please compress the image or take a new photo')
+  }
+
+  // Validate file type
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Invalid file type: Only images are allowed')
+  }
+
+  const form = new FormData()
+  form.append('vin', vin)
+  form.append('role', role)
+  form.append('file', file)
+
+  const headers: Record<string, string> = {}
+  if (API_KEY) headers['X-Api-Key'] = API_KEY
+
+  // Enhanced fetch with better error handling for PWA
+  try {
+    onProgress?.(10) // Starting upload
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
+    const response = await fetch(`${BASE}/intake/photos/upload`, { 
+      method: 'POST', 
+      headers, 
+      body: form,
+      signal: controller.signal
+    })
+
+    clearTimeout(timeoutId)
+    onProgress?.(90) // Upload complete, processing
+
+    if (!response.ok) {
+      let errorMessage = `Upload failed (${response.status})`
+      
+      try {
+        const errorText = await response.text()
+        if (errorText) {
+          // Try to parse JSON error
+          try {
+            const errorJson = JSON.parse(errorText)
+            errorMessage = errorJson.error || errorJson.message || errorMessage
+          } catch {
+            // Use raw text if not JSON
+            errorMessage = errorText
+          }
+        }
+      } catch {
+        // Use status-based error message
+        if (response.status === 413) {
+          errorMessage = 'Photo is too large. Please try taking a smaller photo.'
+        } else if (response.status === 415) {
+          errorMessage = 'Photo format not supported. Please try again.'
+        } else if (response.status >= 500) {
+          errorMessage = 'Server error. Please try again in a moment.'
+        }
+      }
+
+      throw new Error(errorMessage)
+    }
+
+    const result = await response.json()
+    onProgress?.(100) // Complete
+
+    return result
+
+  } catch (error: any) {
+    // Enhanced error handling for common PWA issues
+    if (error.name === 'AbortError') {
+      throw new Error('Upload timed out. Please check your connection and try again.')
+    }
+    
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      throw new Error('Network error. Please check your connection and try again.')
+    }
+
+    if (error.name === 'TypeError' && error.message.includes('NetworkError')) {
+      throw new Error('Network connection failed. Please try again.')
+    }
+
+    // Re-throw with original message if it's already a handled error
+    throw error
+  }
 }
 
 export async function getPassport(vin: string) {

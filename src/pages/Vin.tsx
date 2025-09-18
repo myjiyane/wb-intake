@@ -10,6 +10,7 @@ import {
   setDekraUrl as setDekraUrlApi,
   setOdometer,
   ocrVinFromImage,
+  ocrOdoFromImage,
   isValidVin,
   formatVin,
   setTyreDepths as setTyreDepthsApi,
@@ -278,16 +279,16 @@ export default function Vin() {
     if (!file) return
     try {
       setOdometerScanning(true)
-      const result = await ocrVinFromImage(file, {
+      const result = await ocrOdoFromImage(file, {
         compress: true,
         onProgress: (stage: string) => console.log(`Odometer OCR ${stage}...`)
       })
-      const extractedKm = extractOdometerFromText(result.fullText || '')
+      const extractedKm = extractOdometerFromText(result.km?.toString() || '')
       const photoUrl = URL.createObjectURL(file)
       const reading: OdometerReading = {
         km: extractedKm,
         confidence: result.confidence,
-        rawText: result.fullText || '',
+        rawText: result.km?.toString()  || '',
         photo: photoUrl,
         timestamp: Date.now(),
         manuallyAdjusted: false
@@ -425,6 +426,9 @@ export default function Vin() {
     if (!file || !activeRole) return
 
     setUploading(activeRole)
+    
+    // Regular photo upload
+    let uploadSuccess = false
     try {
       const canScanVin = ROLE_GUIDE[activeRole]?.canScanVin
       if (canScanVin && !isSealed) {
@@ -462,14 +466,82 @@ export default function Vin() {
       }
 
       await uploadPhotoDev(vin, activeRole, file)
-      await load()
-    } catch (err: any) {
-      alert('Upload failed: ' + (err?.message || String(err)))
-    } finally {
-      setUploading(null)
-      setActiveRole('')
-      e.target.value = ''
+      uploadSuccess = true
+    } catch (uploadError: any) {
+      // Even if upload "fails", it might have actually succeeded
+      console.warn('Upload reported error, but checking if it actually succeeded:', uploadError.message)
     }
+
+    // REFRESH FIX: Always try to refresh regardless of upload error
+    await new Promise(resolve => setTimeout(resolve, 300))
+    
+    // Verify photo appeared by checking fresh data from server
+    let attempts = 0
+    const maxAttempts = 3
+    let photoFound = false
+    
+    while (attempts < maxAttempts && !photoFound) {
+      try {
+        // Load fresh data and check immediately
+        await load()
+        
+        // Wait a moment for state to update after load()
+        await new Promise(resolve => setTimeout(resolve, 200))
+        
+        // Check if photo exists by re-fetching checklist data
+        const freshChecklist = await getChecklist(vin)
+        const freshPassport = await getPassport(vin) as any
+        
+        // Check in both draft and sealed images
+        const allImages = [
+          ...(freshPassport?.sealed?.images?.items || []),
+          ...(freshPassport?.draft?.images?.items || []),
+        ]
+        
+        const photoExists = allImages.some((img: any) => img.role === activeRole)
+        
+        if (photoExists) {
+          photoFound = true
+          uploadSuccess = true
+          break
+        }
+        
+      } catch (checkError) {
+        console.warn('Error checking photo status:', checkError)
+      }
+      
+      attempts++
+      if (attempts < maxAttempts) {
+        console.log(`Photo not confirmed yet, checking again attempt ${attempts}`)
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+    }
+    
+    // Only show error if upload truly failed (photo not found after retries)
+    if (!uploadSuccess && !photoFound) {
+      try {
+        await load()
+        await new Promise(resolve => setTimeout(resolve, 200))
+        
+        const finalCheck = await getPassport(vin) as any
+        const finalImages = [
+          ...(finalCheck?.sealed?.images?.items || []),
+          ...(finalCheck?.draft?.images?.items || []),
+        ]
+        const finalPhotoExists = finalImages.some((img: any) => img.role === activeRole)
+        
+        if (!finalPhotoExists) {
+          alert('Upload failed - please try again')
+        }
+      } catch {
+        // If final check fails, assume upload failed
+        alert('Upload failed - please try again')
+      }
+    }
+
+    setUploading(null)
+    setActiveRole('')
+    e.target.value = ''
   }
 
   // Standalone VIN verification
@@ -705,7 +777,7 @@ export default function Vin() {
                 <div className="text-xs text-slate-500 text-center">
                   Automatic reading extraction prevents manual entry errors
                 </div>
-              </div>
+              </div> 
             ) : (
               <div className="space-y-4">
                 {/* Captured photo and extracted reading */}
@@ -718,29 +790,43 @@ export default function Vin() {
                     />
                   )}
 
-                  <div className="p-3 space-y-2">
+                  <div className="p-3 space-y-3">
                     <div className="flex items-center justify-between text-xs text-slate-600">
-                      <span>Extracted Reading:</span>
+                      <span>OCR Results:</span>
                       <span className="flex items-center gap-1">
                         <Eye className="w-3 h-3" />
                         {odometerReading.confidence.toFixed(0)}% confidence
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        value={odometerInput}
-                        onChange={e => handleOdometerAdjustment(e.target.value)}
-                        placeholder="Verify/correct reading"
-                        className={`flex-1 border rounded-lg px-3 py-2 text-lg font-mono
-                          ${odometerReading.manuallyAdjusted ? 'border-amber-300 bg-amber-50 ring-2 ring-amber-200' : 'border-slate-300'}
-                        `}
-                        disabled={isSealed}
-                        min={0}
-                        max={999999}
-                      />
-                      <span className="text-sm text-slate-600 font-medium">km</span>
+                    {/* Show raw OCR text that was analyzed */}
+                    <div className="bg-slate-50 border border-slate-200 rounded p-2">
+                      <div className="text-xs text-slate-600 mb-1">Text detected in photo:</div>
+                      <div className="text-xs font-mono text-slate-800 max-h-16 overflow-y-auto">
+                        {odometerReading.rawText || 'No text detected'}
+                      </div>
+                    </div>
+
+                    {/* Extracted reading with manual override */}
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">
+                        Extracted Reading: {odometerReading.km ? `${odometerReading.km.toLocaleString()} km` : 'Could not detect number'}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={odometerInput}
+                          onChange={e => handleOdometerAdjustment(e.target.value)}
+                          placeholder="Verify/correct reading"
+                          className={`flex-1 border rounded-lg px-3 py-2 text-lg font-mono
+                            ${odometerReading.manuallyAdjusted ? 'border-amber-300 bg-amber-50 ring-2 ring-amber-200' : 'border-slate-300'}
+                          `}
+                          disabled={isSealed}
+                          min={0}
+                          max={999999}
+                        />
+                        <span className="text-sm text-slate-600 font-medium">km</span>
+                      </div>
                     </div>
 
                     {odometerReading.manuallyAdjusted && (
@@ -750,8 +836,8 @@ export default function Vin() {
                           <div className="text-xs text-amber-700">
                             <div className="font-medium">Manual adjustment detected</div>
                             <div className="mt-1">
-                              Original: <span className="font-mono">{odometerReading.km || 'Not detected'}</span><br/>
-                              Adjusted: <span className="font-mono">{odometerInput}</span>
+                              OCR detected: <span className="font-mono">{odometerReading.km || 'Nothing'}</span><br/>
+                              Adjusted to: <span className="font-mono">{odometerInput}</span>
                             </div>
                           </div>
                         </div>
@@ -759,7 +845,7 @@ export default function Vin() {
                         <textarea
                           value={odometerJustification}
                           onChange={e => setOdometerJustification(e.target.value)}
-                          placeholder="Why was the reading manually adjusted? (e.g., display unclear, partial obstruction)"
+                          placeholder="Why was the reading manually adjusted? (e.g., OCR missed digits, display unclear)"
                           className="w-full mt-2 border border-amber-300 rounded px-2 py-1 text-xs bg-white"
                           rows={2}
                           disabled={isSealed}
@@ -777,16 +863,16 @@ export default function Vin() {
                       </button>
 
                       <button
-                        onClick={() => {
-                          setOdometerReading(null)
-                          setOdometerInput('')
-                          setOdometerJustification('')
-                        }}
-                        disabled={isSealed}
-                        className="px-3 py-2 border border-slate-300 rounded-lg text-sm hover:bg-slate-50"
-                      >
-                        Retake
-                      </button>
+                      onClick={() => {
+                        setOdometerReading(null)
+                        setOdometerInput('')
+                        setOdometerJustification('')
+                      }}
+                      disabled={isSealed}
+                      className="px-3 py-2 border border-slate-300 rounded-lg text-sm hover:bg-slate-50"
+                    >
+                      Retake
+                    </button>
                     </div>
                   </div>
                 </div>
@@ -803,7 +889,7 @@ export default function Vin() {
               <div>
                 <h3 className="font-semibold text-slate-800">Tyre Tread Depths</h3>
                 <p className="text-xs text-slate-600">
-                  {isSealed ? 'Sealed measurements with condition assessment' : 'Measure with tread depth gauge (mm) - All required'}
+                  {isSealed ? 'Sealed measurements' : 'Measure with tread depth gauge (mm) - All required'}
                 </p>
               </div>
             </div>
@@ -840,77 +926,100 @@ export default function Vin() {
                 </div>
               </div>
 
-              {/* Vertical tyre depth input fields with condition display */}
-              <div className="space-y-3">
-                <TyreInputField
-                  label="Front Left Tyre"
-                  position="fl"
-                  value={tyreDepths.fl}
-                  onChange={(value) => setTyreDepths(prev => ({ ...prev, fl: value }))}
-                  disabled={isSealed}
-                />
-
-                <TyreInputField
-                  label="Front Right Tyre"
-                  position="fr"
-                  value={tyreDepths.fr}
-                  onChange={(value) => setTyreDepths(prev => ({ ...prev, fr: value }))}
-                  disabled={isSealed}
-                />
-
-                <TyreInputField
-                  label="Rear Left Tyre"
-                  position="rl"
-                  value={tyreDepths.rl}
-                  onChange={(value) => setTyreDepths(prev => ({ ...prev, rl: value }))}
-                  disabled={isSealed}
-                />
-
-                <TyreInputField
-                  label="Rear Right Tyre"
-                  position="rr"
-                  value={tyreDepths.rr}
-                  onChange={(value) => setTyreDepths(prev => ({ ...prev, rr: value }))}
-                  disabled={isSealed}
-                />
-              </div>
-
-              {/* Overall tyre condition summary for sealed passports */}
-              {isSealed && allTyreFieldsCompleted && (
-                <div className="bg-white border border-slate-200 rounded-lg p-3">
-                  <div className="text-sm font-medium text-slate-700 mb-2">Tyre Condition Summary</div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    {Object.entries(tyreDepths).map(([pos, depth]) => {
-                      if (typeof depth !== 'number') return null
-                      const condition = getTyreCondition(depth)
-                      const posLabel = { fl: 'Front Left', fr: 'Front Right', rl: 'Rear Left', rr: 'Rear Right' }[pos]
-                      return (
-                        <div key={pos} className={`flex justify-between items-center p-2 rounded border ${condition.bgColor} ${condition.color}`}>
-                          <span className="font-medium">{posLabel}:</span>
-                          <span>{depth.toFixed(1)}mm ({condition.condition})</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                  
-                  {/* Overall assessment */}
-                  <div className="mt-3 p-2 bg-slate-50 border border-slate-200 rounded text-xs">
-                    <div className="font-medium text-slate-700">Overall Assessment:</div>
-                    <div className="text-slate-600">
-                      {(() => {
-                        const depths = Object.values(tyreDepths).filter(d => typeof d === 'number') as number[]
-                        const minDepth = Math.min(...depths)
-                        const avgDepth = depths.reduce((sum, d) => sum + d, 0) / depths.length
-                        
-                        if (minDepth < 2) return '⚠️ Immediate replacement required'
-                        if (minDepth < 4) return '⚠️ Replacement recommended soon'
-                        if (avgDepth >= 8) return '✅ All tyres in excellent condition'
-                        return '✅ All tyres in good condition'
-                      })()}
-                    </div>
+              {/* Simplified 2x2 tyre depth input grid */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">
+                    Front Left (FL) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.fl || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, fl: e.target.value ? Number(e.target.value) : '' }))}
+                      placeholder="0.0"
+                      className={`w-full border rounded-lg px-3 py-2 text-sm pr-8 ${
+                        tyreDepths.fl === '' ? 'border-red-300 bg-red-50' : 'border-slate-300'
+                      }`}
+                      disabled={isSealed}
+                      required
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
                   </div>
                 </div>
-              )}
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">
+                    Front Right (FR) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.fr || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, fr: e.target.value ? Number(e.target.value) : '' }))}
+                      placeholder="0.0"
+                      className={`w-full border rounded-lg px-3 py-2 text-sm pr-8 ${
+                        tyreDepths.fr === '' ? 'border-red-300 bg-red-50' : 'border-slate-300'
+                      }`}
+                      disabled={isSealed}
+                      required
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">
+                    Rear Left (RL) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.rl || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, rl: e.target.value ? Number(e.target.value) : '' }))}
+                      placeholder="0.0"
+                      className={`w-full border rounded-lg px-3 py-2 text-sm pr-8 ${
+                        tyreDepths.rl === '' ? 'border-red-300 bg-red-50' : 'border-slate-300'
+                      }`}
+                      disabled={isSealed}
+                      required
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">
+                    Rear Right (RR) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.1"
+                      value={tyreDepths.rr || ''}
+                      onChange={e => setTyreDepths(prev => ({ ...prev, rr: e.target.value ? Number(e.target.value) : '' }))}
+                      placeholder="0.0"
+                      className={`w-full border rounded-lg px-3 py-2 text-sm pr-8 ${
+                        tyreDepths.rr === '' ? 'border-red-300 bg-red-50' : 'border-slate-300'
+                      }`}
+                      disabled={isSealed}
+                      required
+                    />
+                    <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
+                  </div>
+                </div>
+              </div>
 
               {/* Progress indicator - only show for unsealed */}
               {!isSealed && (
@@ -929,19 +1038,6 @@ export default function Vin() {
                   </div>
                 </div>
               )}
-
-              {/* Quick reference guide */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <div className="text-xs text-blue-700">
-                  <div className="font-medium mb-1">Tread Depth Guide:</div>
-                  <div className="space-y-1">
-                    <div>• <strong>8-12mm:</strong> New tyre</div>
-                    <div>• <strong>4-8mm:</strong> Good condition</div>
-                    <div>• <strong>2-4mm:</strong> Fair condition</div>
-                    <div>• <strong>0-2mm:</strong> Replace required</div>
-                  </div>
-                </div>
-              </div>
 
               {/* Save button - hide if sealed */}
               {!isSealed && (
