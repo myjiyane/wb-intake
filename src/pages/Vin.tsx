@@ -793,10 +793,6 @@ export default function Vin() {
                   <div className="p-3 space-y-3">
                     <div className="flex items-center justify-between text-xs text-slate-600">
                       <span>OCR Results:</span>
-                      <span className="flex items-center gap-1">
-                        <Eye className="w-3 h-3" />
-                        {odometerReading.confidence}% confidence
-                      </span>
                     </div>
 
                     {/* Show raw OCR text that was analyzed */}
