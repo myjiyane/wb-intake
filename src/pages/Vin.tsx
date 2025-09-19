@@ -795,7 +795,7 @@ export default function Vin() {
                       <span>OCR Results:</span>
                       <span className="flex items-center gap-1">
                         <Eye className="w-3 h-3" />
-                        {odometerReading.confidence.toFixed(0)}% confidence
+                        {odometerReading.confidence}% confidence
                       </span>
                     </div>
 
