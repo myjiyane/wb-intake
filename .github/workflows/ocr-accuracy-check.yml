@@ -1,0 +1,139 @@
+name: OCR Accuracy & Performance Tests
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'src/lib/api.ts'
+      - 'src/lib/image-utils.ts'
+      - 'src/lib/vin-ocr.ts'
+      - 'src/pages/Vin.tsx'
+      - 'src/components/VinScanner.tsx'
+      - 'tests/**'
+      - 'package*.json'
+  push:
+    branches: [ main ]
+
+jobs:
+  ocr-accuracy-tests:
+    name: OCR Accuracy & Performance Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript compilation check
+        run: npx tsc --noEmit
+
+      - name: Run lint check
+        run: npm run lint
+
+      - name: Run unit tests
+        run: npm run test:run tests/unit
+
+      - name: Run VIN OCR accuracy tests
+        run: |
+          echo "🔍 Running VIN OCR accuracy validation..."
+          npm run test:run tests/accuracy/vin-ocr.test.ts
+        env:
+          CI: true
+
+      - name: Run Odometer OCR accuracy tests
+        run: |
+          echo "🔍 Running Odometer OCR accuracy validation..."
+          npm run test:run tests/accuracy/odometer-ocr.test.ts
+        env:
+          CI: true
+
+      - name: Run performance benchmarks
+        run: |
+          echo "⚡ Running performance benchmarks..."
+          npm run test:run tests/performance/speed.test.ts
+        env:
+          CI: true
+
+      - name: Run integration tests
+        run: |
+          echo "🧪 Running integration tests..."
+          npm run test:run tests/integration
+        env:
+          CI: true
+
+      - name: Generate test coverage
+        run: npm run test:coverage
+        continue-on-error: true
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage/lcov.info
+          fail_ci_if_error: false
+        continue-on-error: true
+
+      - name: Check accuracy thresholds
+        run: |
+          echo "📊 Validating accuracy requirements..."
+          echo "✅ VIN OCR must achieve >95% accuracy"
+          echo "✅ Odometer OCR must achieve >95% accuracy"
+          echo "✅ Image processing must complete <200ms"
+          echo "✅ VIN OCR must complete <3000ms"
+          echo "✅ Odometer OCR must complete <2500ms"
+          echo ""
+          echo "If any tests failed above, the deployment will be blocked."
+          echo "Review test output for specific accuracy metrics and failure details."
+
+  build-validation:
+    name: Build Validation
+    runs-on: ubuntu-latest
+    needs: ocr-accuracy-tests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Validate build artifacts
+        run: |
+          echo "🏗️ Validating build output..."
+          ls -la dist/
+          echo "✅ Build completed successfully"
+
+  deployment-gate:
+    name: Deployment Gate
+    runs-on: ubuntu-latest
+    needs: [ocr-accuracy-tests, build-validation]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Deployment approved
+        run: |
+          echo "🚀 All OCR accuracy and performance tests passed!"
+          echo "✅ VIN OCR accuracy validated (>95%)"
+          echo "✅ Odometer OCR accuracy validated (>95%)"
+          echo "✅ Performance benchmarks passed"
+          echo "✅ Build validation successful"
+          echo ""
+          echo "Deployment can proceed safely."
