@@ -1,9 +1,7 @@
-import React from 'react'
-import { Outlet, useNavigate, Link } from 'react-router-dom'
+import { Outlet, Link } from 'react-router-dom'
 import { Car } from 'lucide-react'
 
 export default function App() {
-  const nav = useNavigate()
   return (
     <div className="min-h-full max-w-md mx-auto">
       <header className="sticky top-0 z-10 bg-teal-600 text-white">
@@ -22,3 +20,4 @@ export default function App() {
     </div>
   )
 }
+

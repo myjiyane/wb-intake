@@ -1,8 +1,9 @@
 // src/pages/Start.tsx
-import React, { useRef, useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import VinScanner from '../components/VinScanner'
-import { initDraft, isValidVin, formatVin } from '../lib/api'
+import { initDraft } from '../lib/api'
+import { formatVin, normalizeVin, isValidVin } from '../lib/vin'
 import type { ImageRole } from '../types'
 import { AlertTriangle, CheckCircle2, Scan, Camera, Shield, Eye, Edit3 } from 'lucide-react'
 
@@ -34,17 +35,44 @@ export default function Start() {
   const vinInputRef = useRef<HTMLInputElement | null>(null)
   const nav = useNavigate()
 
-  function normalizeVin(input: string) {
-    return input
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .replace(/[IOQ]/g, '')
-      .slice(0, 17)
+  function getManufacturerInfo(wmi: string): string {
+    const saManufacturers: { [key: string]: string } = {
+      'AAV': '(Volkswagen SA)',
+      'ABA': '(BMW SA)', 
+      'ACA': '(Nissan SA)',
+      'AHA': '(Toyota SA)',
+      'AJA': '(Ford SA)',
+      'AKA': '(Mercedes-Benz SA)',
+      'ALA': '(General Motors SA)',
+    };
+    
+    if (saManufacturers[wmi]) {
+      return saManufacturers[wmi];
+    }
+    
+    if (wmi.startsWith('A')) {
+      return '(South African manufacturer)';
+    }
+    
+    return '(World Manufacturer ID)';
+  }
+
+  function getModelYear(char: string): string {
+    const yearMap: { [key: string]: string } = {
+      'A': '2010', 'B': '2011', 'C': '2012', 'D': '2013', 'E': '2014',
+      'F': '2015', 'G': '2016', 'H': '2017', 'J': '2018', 'K': '2019',
+      'L': '2020', 'M': '2021', 'N': '2022', 'P': '2023', 'R': '2024',
+      'S': '2025', 'T': '2026', 'V': '2027', 'W': '2028', 'X': '2029',
+      'Y': '2030', '1': '2001', '2': '2002', '3': '2003', '4': '2004',
+      '5': '2005', '6': '2006', '7': '2007', '8': '2008', '9': '2009'
+    };
+    
+    return yearMap[char] || 'Unknown';
   }
 
   // Handle successful VIN scan
   function handleScanResult(scannedVinValue: string, method: 'live_scan' | 'photo_ocr' = 'live_scan') {
-    const formatted = formatVin(normalizeVin(scannedVinValue))
+    const formatted = formatVin(scannedVinValue)
     const scanResult: ScanResult = {
       vin: formatted,
       confidence: method === 'live_scan' ? 100 : 95, // Live scanning assumed high confidence
@@ -123,8 +151,9 @@ export default function Start() {
     try {
       await initDraft(finalVin, lot, DEFAULT_ROLES)
       nav(`/vin/${finalVin}?lot=${encodeURIComponent(lot)}`)
-    } catch (e: any) {
-      console.warn('init failed:', e?.message || e)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('init failed:', message);
       nav(`/vin/${finalVin}?lot=${encodeURIComponent(lot)}`)
     } finally {
       setBusy(false)
@@ -257,7 +286,7 @@ export default function Start() {
                 `}
                 placeholder="Verify VIN accuracy"
                 disabled={busy}
-                inputMode="latin"
+                inputMode="text"
                 autoCapitalize="characters"
                 maxLength={17}
               />
@@ -298,7 +327,7 @@ export default function Start() {
                 <textarea
                   value={justification}
                   onChange={e => setJustification(e.target.value)}
-                  placeholder="Explain why the VIN was manually corrected (e.g., damaged plate, poor lighting, etc.)"
+                  placeholder="Explain why the VIN was manually corrected (e.g. incorrect result, damaged licence disk, poor lighting, etc.)"
                   className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm bg-amber-50"
                   rows={3}
                   disabled={busy}
@@ -308,17 +337,23 @@ export default function Start() {
 
             {/* VIN Analysis */}
             {finalVin.length >= 11 && (
-              <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
-                <div className="font-medium mb-1">VIN Analysis:</div>
-                <div className="space-y-1">
-                  <div>Length: {finalVin.length}/17 characters</div>
-                  <div>Format: {isValidVin(finalVin) ? 'Valid checksum' : 'Invalid/partial'}</div>
-                  {finalVin.length >= 3 && (
-                    <div>WMI: {finalVin.substring(0, 3)} (World Manufacturer ID)</div>
-                  )}
-                </div>
+            <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
+              <div className="font-medium mb-1">VIN Analysis:</div>
+              <div className="space-y-1">
+                <div>Length: {finalVin.length}/17 characters</div>
+                <div>Format: {isValidVin(finalVin) ? 'Valid checksum' : finalVin.length === 17 ? 'Invalid checksum' : 'Partial VIN'}</div>
+                {finalVin.length >= 3 && (
+                  <div>WMI: {finalVin.substring(0, 3)} {getManufacturerInfo(finalVin.substring(0, 3))}</div>
+                )}
+                {finalVin.length >= 10 && (
+                  <div>Year: {getModelYear(finalVin[9])}</div>
+                )}
+                {finalVin.startsWith('A') && (
+                  <div className="text-emerald-600">South African assembled vehicle</div>
+                )}
               </div>
-            )}
+            </div>
+          )}
           </div>
         </div>
       )}
@@ -326,12 +361,12 @@ export default function Start() {
       {/* Lot ID Section */}
       <div className="space-y-2">
         <label className="block text-sm font-medium text-slate-700">
-          Lot ID (optional)
+          Lot ID
         </label>
         <input
           value={lot}
           onChange={e => setLot(e.target.value)}
-          placeholder="WB-POC-001"
+          placeholder="WB-LOT-001"
           className="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm"
           disabled={busy}
         />
@@ -358,7 +393,7 @@ export default function Start() {
         ) : (
           <div className="flex items-center justify-center gap-2">
             <Shield className="w-5 h-5" />
-            Start Professional Inspection
+            Start Inspection
           </div>
         )}
       </button>
@@ -376,9 +411,10 @@ export default function Start() {
           onResult={handleScanResult}
           onClose={() => setScanOpen(false)}
           showValidation={true}
-          allowInvalidVins={true} // Allow but flag invalid VINs for correction
+          allowInvalidVins={true}
         />
       )}
     </div>
   )
 }
+

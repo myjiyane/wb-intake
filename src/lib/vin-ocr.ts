@@ -1,13 +1,10 @@
 import Tesseract from 'tesseract.js';
+import { normalizeVin } from './vin';
 
 // ---------- VIN helpers ----------
-export function normalizeVin(raw: string): string {
-  return raw
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '')
-    .replace(/[IOQ]/g, '')
-    .slice(0, 17);
-}
+export { normalizeVin } from './vin';
+
+type RecognizeConfig = Partial<Tesseract.WorkerOptions> & Partial<Tesseract.WorkerParams> & { tessedit_pageseg_mode?: Tesseract.PSM };
 
 function findVinCandidates(text: string): string[] {
   const U = text.toUpperCase();
@@ -68,81 +65,91 @@ function drawToCanvas(img: HTMLImageElement, maxW = 1200): HTMLCanvasElement {
 
 function thresholdCanvas(src: HTMLCanvasElement, th = 170, invert = false): HTMLCanvasElement {
   const out = document.createElement('canvas');
-  out.width = src.width; out.height = src.height;
-  const s = src.getContext('2d')!;
-  const d = out.getContext('2d')!;
-  const img = s.getImageData(0, 0, src.width, src.height);
-  const a = img.data;
-  for (let i = 0; i < a.length; i += 4) {
-    const lum = a[i]*0.299 + a[i+1]*0.587 + a[i+2]*0.114;
+  out.width = src.width;
+  out.height = src.height;
+  const source = src.getContext('2d');
+  const destination = out.getContext('2d');
+  if (!source || !destination) return out;
+
+  const img = source.getImageData(0, 0, src.width, src.height);
+  const data = img.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
     const bin = lum > th ? 255 : 0;
-    const val = invert ? (255 - bin) : bin;
-    a[i] = a[i+1] = a[i+2] = val;
+    const val = invert ? 255 - bin : bin;
+    data[i] = data[i + 1] = data[i + 2] = val;
   }
-  d.putImageData(img, 0, 0);
+  destination.putImageData(img, 0, 0);
   return out;
 }
 
+
+
 function gammaCanvas(src: HTMLCanvasElement, gamma = 1.25): HTMLCanvasElement {
   const out = document.createElement('canvas');
-  out.width = src.width; out.height = src.height;
-  const s = src.getContext('2d')!;
-  const d = out.getContext('2d')!;
-  const img = s.getImageData(0, 0, src.width, src.height);
-  const a = img.data;
-  const g = 1 / Math.max(0.01, gamma);
-  for (let i = 0; i < a.length; i += 4) {
-    a[i]   = 255 * Math.pow(a[i]  /255, g);
-    a[i+1] = 255 * Math.pow(a[i+1]/255, g);
-    a[i+2] = 255 * Math.pow(a[i+2]/255, g);
+  out.width = src.width;
+  out.height = src.height;
+  const source = src.getContext('2d');
+  const destination = out.getContext('2d');
+  if (!source || !destination) return out;
+
+  const img = source.getImageData(0, 0, src.width, src.height);
+  const data = img.data;
+  const exponent = 1 / Math.max(0.01, gamma);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 255 * Math.pow(data[i] / 255, exponent);
+    data[i + 1] = 255 * Math.pow(data[i + 1] / 255, exponent);
+    data[i + 2] = 255 * Math.pow(data[i + 2] / 255, exponent);
   }
-  d.putImageData(img, 0, 0);
+  destination.putImageData(img, 0, 0);
   return out;
 }
 
 // tiny unsharp mask (light)
 function sharpenCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   const out = document.createElement('canvas');
-  out.width = src.width; out.height = src.height;
-  const s = src.getContext('2d')!;
-  const d = out.getContext('2d')!;
-  d.drawImage(src, 0, 0);
-  // 3x3 sharpen kernel
-  const w = src.width, h = src.height;
-  const img = d.getImageData(0,0,w,h);
-  const a = img.data;
-  const copy = new Uint8ClampedArray(a); // simple conv without separable pass
-  const idx = (x:number,y:number) => (y*w + x)*4;
-  const k = [ 0,-1, 0, -1, 5,-1, 0,-1, 0 ];
+  out.width = src.width;
+  out.height = src.height;
+  const destination = out.getContext('2d');
+  if (!destination) return out;
 
-  for (let y=1; y<h-1; y++) {
-    for (let x=1; x<w-1; x++) {
-      for (let c=0;c<3;c++) {
-        let acc=0, p=0;
-        for (let ky=-1; ky<=1; ky++) for (let kx=-1; kx<=1; kx++) {
-          p = copy[idx(x+kx,y+ky)+c];
-          acc += p * k[(ky+1)*3 + (kx+1)];
+  destination.drawImage(src, 0, 0);
+  const w = src.width;
+  const h = src.height;
+  const img = destination.getImageData(0, 0, w, h);
+  const data = img.data;
+  const copy = new Uint8ClampedArray(data);
+  const idx = (x: number, y: number) => (y * w + x) * 4;
+  const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      for (let c = 0; c < 3; c++) {
+        let acc = 0;
+        let kIndex = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            acc += copy[idx(x + kx, y + ky) + c] * kernel[kIndex++];
+          }
         }
-        a[idx(x,y)+c] = Math.max(0, Math.min(255, acc));
+        data[idx(x, y) + c] = Math.max(0, Math.min(255, acc));
       }
     }
   }
-  d.putImageData(img,0,0);
+
+  destination.putImageData(img, 0, 0);
   return out;
 }
 
 // ---------- OCR ----------
 async function ocrCanvas(canvas: HTMLCanvasElement, psm: number, timeoutMs = 4500): Promise<string | null> {
   const run = async () => {
-    const { data } = await Tesseract.recognize(canvas, 'eng', {
-      // Make Tesseract VIN-biased
+    const options: RecognizeConfig = {
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
       tessedit_char_blacklist: ':/.,;_()[]{}!@#$%^&*+=?~`\'"',
-      // Page segmentation modes:
-      // 6: block of text; 7: single line; 11: sparse text; 13: raw line
-      psm,
-      // oem: 1 // (optional) LSTM only
-    } as any);
+      tessedit_pageseg_mode: String(psm) as Tesseract.PSM,
+    };
+    const { data } = await Tesseract.recognize(canvas, 'eng', options);
     const cands = findVinCandidates(String(data.text || ''));
     return cands.length ? cands[0] : null;
   };
@@ -175,3 +182,7 @@ export async function extractVinFromImage(file: File): Promise<string | null> {
   }
   return null;
 }
+
+
+
+
