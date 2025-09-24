@@ -1,8 +1,13 @@
 // src/lib/api.ts
 import type { Checklist, ImageRole } from '../types';
+import { logger, serializeError } from './logger';
+import { normalizeVin as normalizeVinInternal, formatVin as formatVinInternal, isValidVin as isValidVinInternal } from './vin';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
+
+const log = logger.withContext({ scope: 'api' });
+
 
 // Enhanced OCR result type matching your backend response
 export interface OcrResult {
@@ -48,32 +53,53 @@ export interface ImageCompressionOptions {
   format?: 'jpeg' | 'webp';
 }
 
-async function j<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { ...(init?.headers as any) };
-  if (API_KEY) headers['X-Api-Key'] = API_KEY;
-  const res = await fetch(url, { ...init, headers });
-  if (!res.ok) {
-    const ct = res.headers.get('content-type') || '';
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const body = ct.includes('application/json') ? await res.json() : await res.text();
-      if (typeof body === 'object' && body && 'error' in body) {
-        const r = body as any;
-        msg = `${res.status} ${r.error}${r.reasons ? ': ' + r.reasons.join(',') : ''}`;
-      } else if (typeof body === 'string' && body) {
-        msg = body;
-      }
-    } catch {}
-    throw new Error(msg);
-  }
-  return res.json() as Promise<T>;
+export interface UploadPhotoOptions {
+  onProgress?: (p: number) => void;
+  context?: Record<string, string | number | boolean>;
+  originalFile?: File;
 }
+
+async function j<T>(url: string, init?: RequestInit): Promise<T> {
+  const initialHeaders: HeadersInit | undefined = init?.headers;
+  const headers = new Headers(initialHeaders);
+  if (API_KEY) headers.set('X-Api-Key', API_KEY);
+
+  const response = await fetch(url, { ...init, headers });
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') ?? '';
+    let message = `${response.status} ${response.statusText}`;
+
+    try {
+      const body = contentType.includes('application/json')
+        ? await response.json()
+        : await response.text();
+
+      if (typeof body === 'object' && body !== null && 'error' in body) {
+        const details = body as { error?: string; reasons?: unknown };
+        const reasons = Array.isArray(details.reasons) ? details.reasons.join(',') : undefined;
+        const errorText = details.error ?? response.statusText;
+        message = `${response.status} ${errorText}${reasons ? `: ${reasons}` : ''}`;
+      } else if (typeof body === 'string' && body.trim().length > 0) {
+        message = body;
+      }
+    } catch (_error) {
+      void _error;
+      /* ignore parse errors */
+    }
+
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 
 export function serverOrigin() {
   try {
     const u = new URL(BASE, window.location.href);
     return `${u.protocol}//${u.host}`;
-  } catch {
+  } catch (_error) {
+    void _error;
     return '';
   }
 }
@@ -186,7 +212,10 @@ export async function ocrOdoFromImage(
     if (compress) {
       onProgress?.('compressing');
       processedFile = await compressImage(file, compressionOptions);
-      console.log(`Image compressed: ${file.size} → ${processedFile.size} bytes`);
+      log.debug('Compressed odometer image', {
+        originalSize: file.size,
+        processedSize: processedFile.size,
+      });
     }
 
     onProgress?.('uploading');
@@ -230,7 +259,8 @@ export async function ocrOdoFromImage(
           default:
             errorMessage = errorBody.message || errorMessage;
         }
-      } catch {
+      } catch (_error) {
+        void _error;
         // Fallback to status text if JSON parsing fails
         errorMessage = await res.text().catch(() => `${res.status} ${res.statusText}`);
       }
@@ -241,11 +271,22 @@ export async function ocrOdoFromImage(
     onProgress?.('processing');
 
     const result = await res.json() as ocrOdoResult;
+    const totalTime = Date.now() - startTime;
+
+    log.info('Odometer OCR completed', {
+      km: result.km,
+      unit: result.unit,
+      confidence: result.confidence,
+      candidates: result.candidates?.length ?? 0,
+      processingTime: result.processingTime,
+      totalTime,
+      fromCache: result.fromCache,
+    });
 
     return result;
 
-  } catch (error) {
-    console.error('OCR Error:', error);
+  } catch (error: unknown) {
+    log.error('Odometer OCR failed', { error: serializeError(error) });
     throw error;
   }
 }
@@ -276,7 +317,10 @@ export async function ocrVinFromImage(
     if (compress) {
       onProgress?.('compressing');
       processedFile = await compressImage(file, compressionOptions);
-      console.log(`Image compressed: ${file.size} → ${processedFile.size} bytes`);
+      log.debug('Compressed VIN image', {
+        originalSize: file.size,
+        processedSize: processedFile.size,
+      });
     }
 
     onProgress?.('uploading');
@@ -320,7 +364,8 @@ export async function ocrVinFromImage(
           default:
             errorMessage = errorBody.message || errorMessage;
         }
-      } catch {
+      } catch (_error) {
+        void _error;
         // Fallback to status text if JSON parsing fails
         errorMessage = await res.text().catch(() => `${res.status} ${res.statusText}`);
       }
@@ -333,20 +378,20 @@ export async function ocrVinFromImage(
     const result = await res.json() as OcrResult;
     const totalTime = Date.now() - startTime;
 
-    console.log('OCR Result:', {
+    log.info('VIN OCR completed', {
       vin: result.vin,
-      valid: result.vinValid,
+      vinValid: result.vinValid,
       confidence: result.confidence,
-      candidates: result.candidates?.length || 0,
+      candidates: result.candidates?.length ?? 0,
       processingTime: result.processingTime,
       totalTime,
-      fromCache: result.fromCache
+      fromCache: result.fromCache,
     });
 
     return result;
 
-  } catch (error) {
-    console.error('OCR Error:', error);
+  } catch (error: unknown) {
+    log.error('VIN OCR failed', { error: serializeError(error) });
     throw error;
   }
 }
@@ -356,45 +401,15 @@ export async function ocrVinServer(file: File): Promise<string | null> {
   try {
     const result = await ocrVinFromImage(file);
     return result.vin;
-  } catch (error) {
-    console.error('Legacy OCR error:', error);
+  } catch (error: unknown) {
+    log.error('Legacy OCR error', { error: serializeError(error) });
     throw error;
   }
 }
 
-// Enhanced VIN validation (client-side check)
-export function isValidVin(vin: string): boolean {
-  if (!vin || vin.length !== 17) return false;
-  
-  // Basic format check
-  if (!/^[A-HJ-NPR-Z0-9]{17}$/i.test(vin)) return false;
-  
-  // Check digit validation
-  const weights = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
-  const values: { [key: string]: number } = {
-    '0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-    'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7, 'H': 8,
-    'J': 1, 'K': 2, 'L': 3, 'M': 4, 'N': 5, 'P': 7, 'R': 9, 'S': 2,
-    'T': 3, 'U': 4, 'V': 5, 'W': 6, 'X': 7, 'Y': 8, 'Z': 9
-  };
-  
-  const upper = vin.toUpperCase();
-  let sum = 0;
-  
-  for (let i = 0; i < 17; i++) {
-    if (i === 8) continue; // skip check digit position
-    sum += (values[upper[i]] || 0) * weights[i];
-  }
-  
-  const checkDigit = sum % 11;
-  const expectedCheck = checkDigit === 10 ? 'X' : checkDigit.toString();
-  return upper[8] === expectedCheck;
-}
-
-// VIN formatting utility
-export function formatVin(vin: string): string {
-  return vin.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 17);
-}
+export const normalizeVin = normalizeVinInternal;
+export const formatVin = formatVinInternal;
+export const isValidVin = isValidVinInternal;
 
 // Get OCR processing statistics
 export async function getOcrMetrics() {
@@ -423,7 +438,7 @@ export async function getHealthStatus() {
     };
     cache: {
       keys: number;
-      stats: any;
+      stats: Record<string, unknown>;
     };
   }>(`${BASE}/healthz`);
 }
@@ -445,10 +460,10 @@ export async function seedRequiredPhotos(vin: string, lotId: string, roles: Imag
 // Replace existing uploadPhotoDev function with this improved version
 
 export async function uploadPhotoDev(
-  vin: string, 
-  role: ImageRole, 
-  file: File, 
-  onProgress?: (p: number) => void
+  vin: string,
+  role: ImageRole,
+  file: File,
+  onProgressOrOptions?: UploadPhotoOptions | ((p: number) => void)
 ) {
   // Validate file before upload
   if (!file || file.size === 0) {
@@ -465,10 +480,30 @@ export async function uploadPhotoDev(
     throw new Error('Invalid file type: Only images are allowed')
   }
 
+  let onProgress: ((p: number) => void) | undefined
+  let context: Record<string, string | number | boolean> | undefined
+  let originalFile: File | undefined
+
+  if (typeof onProgressOrOptions === 'function') {
+    onProgress = onProgressOrOptions
+  } else if (onProgressOrOptions) {
+    onProgress = onProgressOrOptions.onProgress
+    context = onProgressOrOptions.context
+    originalFile = onProgressOrOptions.originalFile
+  }
+
   const form = new FormData()
   form.append('vin', vin)
   form.append('role', role)
   form.append('file', file)
+  if (originalFile && originalFile !== file) {
+    form.append('original_file', originalFile)
+  }
+  if (context) {
+    for (const [key, value] of Object.entries(context)) {
+      form.append(`meta_${key}`, String(value))
+    }
+  }
 
   const headers: Record<string, string> = {}
   if (API_KEY) headers['X-Api-Key'] = API_KEY
@@ -498,14 +533,21 @@ export async function uploadPhotoDev(
         if (errorText) {
           // Try to parse JSON error
           try {
-            const errorJson = JSON.parse(errorText)
-            errorMessage = errorJson.error || errorJson.message || errorMessage
-          } catch {
+            const parsed: unknown = JSON.parse(errorText)
+            if (typeof parsed === 'object' && parsed !== null) {
+              const parsedError = parsed as { error?: string; message?: string }
+              errorMessage = parsedError.error ?? parsedError.message ?? errorMessage
+            } else {
+              errorMessage = errorText
+            }
+          } catch (_error) {
+            void _error;
             // Use raw text if not JSON
             errorMessage = errorText
           }
         }
-      } catch {
+      } catch (_error) {
+        void _error;
         // Use status-based error message
         if (response.status === 413) {
           errorMessage = 'Photo is too large. Please try taking a smaller photo.'
@@ -524,18 +566,26 @@ export async function uploadPhotoDev(
 
     return result
 
-  } catch (error: any) {
-    // Enhanced error handling for common PWA issues
-    if (error.name === 'AbortError') {
-      throw new Error('Upload timed out. Please check your connection and try again.')
-    }
-    
-    if (error.name === 'TypeError' && error.message.includes('fetch')) {
-      throw new Error('Network error. Please check your connection and try again.')
-    }
+  } catch (error: unknown) {
+    log.error('Photo upload failed', {
+      error: serializeError(error),
+      vin,
+      role,
+      fileSize: file.size,
+    });
 
-    if (error.name === 'TypeError' && error.message.includes('NetworkError')) {
-      throw new Error('Network connection failed. Please try again.')
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Upload timed out. Please check your connection and try again.')
+      }
+
+      if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        throw new Error('Network error. Please check your connection and try again.')
+      }
+
+      if (error.name === 'TypeError' && error.message.includes('NetworkError')) {
+        throw new Error('Network connection failed. Please try again.')
+      }
     }
 
     // Re-throw with original message if it's already a handled error
@@ -549,47 +599,25 @@ export async function getPassport(vin: string) {
 
 export async function sealStrict(vin: string, opts?: { force?: boolean }) {
   const url = `${BASE}/passports/seal/strict${opts?.force ? '?force=1' : ''}`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (API_KEY) headers['X-Api-Key'] = API_KEY;
-  const res = await fetch(url, {
+  return j(url, {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ vin }),
   });
-  if (!res.ok) {
-    const ct = res.headers.get('content-type') || '';
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const body = ct.includes('application/json') ? await res.json() : await res.text();
-      if (typeof body === 'object' && body && 'error' in body) {
-        const r = body as any;
-        msg = `${res.status} ${r.error}${r.reasons ? ': ' + r.reasons.join(',') : ''}`;
-      } else if (typeof body === 'string' && body) {
-        msg = body;
-      }
-    } catch {}
-    throw new Error(msg);
-  }
-  return res.json();
 }
 
 export async function initDraft(vin: string, lotId: string, roles?: ImageRole[]) {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const body = {
     vin,
     lot_id: lotId,
-    ...(roles?.length ? { required_photos: roles } : {})
+    ...(roles?.length ? { required_photos: roles } : {}),
   };
-  const res = await fetch(`${BASE}/intake/init`, { 
-    method: 'POST', 
-    headers, 
-    body: JSON.stringify(body) 
+
+  return j(`${BASE}/intake/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${txt || res.statusText}`);
-  }
-  return res.json();
 }
 
 export async function setDekraUrl(vin: string, dekraUrl: string) {
@@ -630,3 +658,8 @@ export async function setTyreDepths(vin: string, depths: {
     body: JSON.stringify({ vin, tyres_mm: depths }),
   });
 }
+
+
+
+
+

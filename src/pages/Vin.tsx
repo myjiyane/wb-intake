@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import {
   getChecklist,
@@ -15,6 +15,7 @@ import {
   formatVin,
   setTyreDepths as setTyreDepthsApi,
 } from '../lib/api'
+import { analyzeAndCropImage, type ImageAnalysis } from '../lib/image-utils'
 import type { Checklist, ImageRole } from '../types'
 import {
   Camera, RefreshCcw, CheckCircle2, AlertTriangle,
@@ -95,6 +96,12 @@ interface OdometerReading {
 
 type TyreDepths = { fl: number | ''; fr: number | ''; rl: number | ''; rr: number | '' }
 
+const getErrorMessage = (error: unknown, fallback: string) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return fallback;
+};
+
 export default function Vin() {
   const { vin = '' } = useParams()
   const [sp] = useSearchParams()
@@ -155,8 +162,9 @@ export default function Vin() {
     return /^https?:\/\//i.test(u) ? u : serverOrigin() + u
   }
 
-  async function load() {
-    setError(null); setLoading(true)
+  const load = useCallback(async () => {
+    setError(null)
+    setLoading(true)
     try {
       const [c, rec] = await Promise.all([
         getChecklist(vin),
@@ -171,7 +179,6 @@ export default function Vin() {
       setPhotos(items)
       setIsSealed(!!rec.sealed)
 
-      // Populate tyre depths from saved data
       const savedTyres = rec.sealed?.tyres_mm || rec.draft?.tyres_mm
       if (savedTyres) {
         setTyreDepths({
@@ -186,13 +193,12 @@ export default function Vin() {
       if (savedDekraUrl) {
         setDekraUrlHref(savedDekraUrl)
       }
-      
-    } catch (e: any) {
-      setError(e?.message || String(e))
+    } catch (error: unknown) {
+      setError(getErrorMessage(error, 'Failed to load vehicle data'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [vin])
 
   // Extract odometer reading from OCR text
   function extractOdometerFromText(text: string): number | null {
@@ -215,63 +221,6 @@ export default function Vin() {
     return candidates.length > 0 ? Math.max(...candidates) : null
   }
    
-  function getTyreCondition(depth: number): { condition: string; color: string; bgColor: string } {
-    if (depth >= 8) return { condition: 'New', color: 'text-green-700', bgColor: 'bg-green-100 border-green-300' }
-    if (depth >= 4) return { condition: 'Good', color: 'text-green-600', bgColor: 'bg-green-50 border-green-200' }
-    if (depth >= 2) return { condition: 'Fair', color: 'text-yellow-600', bgColor: 'bg-yellow-50 border-yellow-200' }
-    return { condition: 'Replace Required', color: 'text-red-600', bgColor: 'bg-red-50 border-red-200' }
-  }
-
-
-  function TyreInputField({ 
-    label, 
-    position, 
-    value, 
-    onChange, 
-    disabled 
-  }: {
-    label: string
-    position: 'fl' | 'fr' | 'rl' | 'rr'
-    value: number | ''
-    onChange: (value: number | '') => void
-    disabled: boolean
-  }) {
-    const isEmpty = value === null || value === undefined || value === ''
-    const condition = typeof value === 'number' ? getTyreCondition(value) : null
-
-    return (
-      <div className="space-y-2">
-        <label className="block text-sm font-medium text-slate-700">
-          {label} <span className="text-red-500">*</span>
-        </label>
-        <div className="relative">
-          <input
-            type="number"
-            min="0"
-            max="12"
-            step="0.1"
-            value={value || ''}
-            onChange={e => onChange(e.target.value ? Number(e.target.value) : '')}
-            placeholder="Enter depth"
-            className={`w-full border rounded-lg px-3 py-3 text-sm pr-8 ${
-              isEmpty 
-                ? 'border-red-300 bg-red-50' 
-                : condition 
-                  ? `border-green-300 ${condition.bgColor}`
-                  : 'border-green-300 bg-green-50'
-            }`}
-            disabled={disabled}
-            required
-          />
-          <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-slate-500">mm</span>
-        </div>
-      </div>
-    )
-  }
-  
-  async function captureOdometer() {
-    odometerFileRef.current?.click()
-  }
 
   
   async function onOdometerFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -279,16 +228,25 @@ export default function Vin() {
     if (!file) return
     try {
       setOdometerScanning(true)
-      const result = await ocrOdoFromImage(file, {
-        compress: true,
-        onProgress: (stage: string) => console.log(`Odometer OCR ${stage}...`)
+
+      const { processedFile, analysis } = await analyzeAndCropImage(file, { target: 'odometer' })
+      if (analysis.shouldRetake) {
+        alert(`Please retake the odometer photo: ${analysis.issues.join(', ')}`)
+        e.target.value = ''
+        return
+      }
+
+      const result = await ocrOdoFromImage(processedFile, {
+        compress: false,
+        onProgress: stage => console.log(`Odometer OCR ${stage}...`)
       })
+
       const extractedKm = extractOdometerFromText(result.km?.toString() || '')
-      const photoUrl = URL.createObjectURL(file)
+      const photoUrl = URL.createObjectURL(processedFile)
       const reading: OdometerReading = {
         km: extractedKm,
         confidence: result.confidence,
-        rawText: result.km?.toString()  || '',
+        rawText: result.km?.toString() || '',
         photo: photoUrl,
         timestamp: Date.now(),
         manuallyAdjusted: false
@@ -297,24 +255,39 @@ export default function Vin() {
       setOdometerInput(extractedKm || '')
       setOdometerJustification('')
 
-      // Also upload the dash_odo photo to the regular photo collection
       setUploading('dash_odo')
       try {
-        await uploadPhotoDev(vin, 'dash_odo', file)
+        await uploadPhotoDev(vin, 'dash_odo', processedFile, {
+          originalFile: processedFile === file ? undefined : file,
+          context: {
+            capture_type: 'odometer',
+            crop_applied: analysis.cropApplied ? '1' : '0',
+            brightness: analysis.brightness.toFixed(1),
+            contrast: analysis.contrast.toFixed(1),
+            sharpness: analysis.sharpness.toFixed(1),
+            framing_score: analysis.framingScore.toFixed(1),
+            issues: analysis.issues.length ? analysis.issues.join('|') : 'none',
+          },
+        })
         await load()
-      } catch (err) {
-        console.warn('Failed to upload odometer photo to collection:', err)
+      } catch (uploadError) {
+        console.warn('Failed to upload odometer photo to collection:', uploadError)
       } finally {
         setUploading(null)
       }
 
       e.target.value = ''
-    } catch (error: any) {
-      alert(`Odometer scanning failed: ${error.message}`)
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, 'Odometer scanning failed')
+      alert(`Odometer scanning failed: ${message}`)
     } finally {
       setOdometerScanning(false)
     }
   }
+
+  const captureOdometer = useCallback(() => {
+    odometerFileRef.current?.click();
+  }, []);
 
   // Handle manual odometer adjustment
   function handleOdometerAdjustment(value: number | string) {
@@ -346,10 +319,10 @@ export default function Vin() {
     }
     try {
       setSaving('odo')
-      await setOdometer(vin, finalReading, 'ocr')
+      await setOdometer(vin, finalReading, 'manual')
       await load()
-    } catch (e: any) {
-      alert(e?.message || String(e))
+    } catch (error: unknown) {
+      alert(getErrorMessage(error, 'Failed to save odometer reading'))
     } finally {
       setSaving(null)
     }
@@ -367,8 +340,8 @@ export default function Vin() {
       setSaving('tyres')
       await setTyreDepthsApi(vin, payload)
       await load()
-    } catch (e: any) {
-      alert(e?.message || String(e))
+    } catch (error: unknown) {
+      alert(getErrorMessage(error, 'Failed to save tyre depths'))
     } finally {
       setSaving(null)
     }
@@ -381,7 +354,7 @@ export default function Vin() {
     return () => { document.body.style.overflow = prev }
   }, [guideRole])
 
-  useEffect(() => { load() }, [vin])
+  useEffect(() => { load() }, [load])
 
   const presentByRole = useMemo(() => {
     const m = new Map<ImageRole, PhotoItem>()
@@ -410,8 +383,9 @@ export default function Vin() {
     try {
       await seedRequiredPhotos(vin, lot, DEFAULT_ROLES)
       await load()
-    } catch (e: any) {
-      alert('Seeding failed: ' + (e?.message || String(e)))
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, 'Failed to seed required photos');
+      alert('Seeding failed: ' + message)
     }
   }
 
@@ -426,18 +400,33 @@ export default function Vin() {
     if (!file || !activeRole) return
 
     setUploading(activeRole)
-    
-    // Regular photo upload
+
     let uploadSuccess = false
+    const canScanVin = ROLE_GUIDE[activeRole]?.canScanVin
+    let processedFile: File = file
+    let analysis: ImageAnalysis | undefined
+
     try {
-      const canScanVin = ROLE_GUIDE[activeRole]?.canScanVin
+      if (canScanVin) {
+        const analysisResult = await analyzeAndCropImage(file, { target: 'vin', preferredMimeType: 'image/jpeg' })
+        analysis = analysisResult.analysis
+        if (analysis.shouldRetake) {
+          alert(`Please retake the VIN photo: ${analysis.issues.join(', ')}`)
+          setUploading(null)
+          setActiveRole('')
+          e.target.value = ''
+          return
+        }
+        processedFile = analysisResult.processedFile
+      }
+
       if (canScanVin && !isSealed) {
         const shouldOcr = confirm('This photo may contain a visible VIN. Scan for verification?')
         if (shouldOcr) {
           try {
             setOcrScanning(true)
-            const result = await ocrVinFromImage(file, {
-              compress: true,
+            const result = await ocrVinFromImage(processedFile, {
+              compress: false,
               onProgress: (stage: string) => console.log(`VIN OCR ${stage}...`)
             })
             if (result.vin) {
@@ -451,90 +440,96 @@ export default function Vin() {
               })
               setTimeout(() => {
                 const matches = formatted === vin
-                const message = `VIN detected: ${formatted}\nConfidence: ${result.confidence.toFixed(1)}%\n\n${
+                const message = `VIN detected: ${formatted}
+Confidence: ${result.confidence.toFixed(1)}%
+
+${
                   matches ? '✓ Matches expected VIN' : '⚠ Does NOT match expected VIN'
-                }\nExpected: ${vin}`
+                }
+Expected: ${vin}`
                 alert(message)
               }, 1000)
             }
-          } catch (ocrError: any) {
-            console.warn('VIN OCR failed:', ocrError.message)
+          } catch (ocrError: unknown) {
+            console.warn('VIN OCR failed:', getErrorMessage(ocrError, 'Unknown VIN OCR error'))
           } finally {
             setOcrScanning(false)
           }
         }
       }
 
-      await uploadPhotoDev(vin, activeRole, file)
+      const context: Record<string, string> = {
+        capture_type: canScanVin ? 'vin' : `photo_${activeRole}`,
+      }
+      if (analysis) {
+        context.crop_applied = analysis.cropApplied ? '1' : '0'
+        context.brightness = analysis.brightness.toFixed(1)
+        context.contrast = analysis.contrast.toFixed(1)
+        context.sharpness = analysis.sharpness.toFixed(1)
+        context.framing_score = analysis.framingScore.toFixed(1)
+        if (analysis.issues.length) context.issues = analysis.issues.join('|')
+      }
+
+      await uploadPhotoDev(vin, activeRole, processedFile, {
+        originalFile: processedFile === file ? undefined : file,
+        context,
+      })
       uploadSuccess = true
-    } catch (uploadError: any) {
-      // Even if upload "fails", it might have actually succeeded
-      console.warn('Upload reported error, but checking if it actually succeeded:', uploadError.message)
+    } catch (error: unknown) {
+      console.warn('Upload reported error', error)
     }
 
-    // REFRESH FIX: Always try to refresh regardless of upload error
     await new Promise(resolve => setTimeout(resolve, 300))
-    
-    // Verify photo appeared by checking fresh data from server
+
     let attempts = 0
     const maxAttempts = 3
     let photoFound = false
-    
+
     while (attempts < maxAttempts && !photoFound) {
       try {
-        // Load fresh data and check immediately
         await load()
-        
-        // Wait a moment for state to update after load()
         await new Promise(resolve => setTimeout(resolve, 200))
-        
-        // Check if photo exists by re-fetching checklist data
-        const freshChecklist = await getChecklist(vin)
-        const freshPassport = await getPassport(vin) as any
-        
-        // Check in both draft and sealed images
-        const allImages = [
-          ...(freshPassport?.sealed?.images?.items || []),
-          ...(freshPassport?.draft?.images?.items || []),
+        await getChecklist(vin)
+        const freshPassport = await getPassport(vin) as PassportRecord
+
+        const allImages: PhotoItem[] = [
+          ...((freshPassport?.sealed?.images?.items ?? []) as PhotoItem[]),
+          ...((freshPassport?.draft?.images?.items ?? []) as PhotoItem[]),
         ]
-        
-        const photoExists = allImages.some((img: any) => img.role === activeRole)
-        
+
+        const photoExists = allImages.some(img => img.role === activeRole)
         if (photoExists) {
           photoFound = true
           uploadSuccess = true
           break
         }
-        
       } catch (checkError) {
         console.warn('Error checking photo status:', checkError)
       }
-      
+
       attempts++
-      if (attempts < maxAttempts) {
+      if (!photoFound && attempts < maxAttempts) {
         console.log(`Photo not confirmed yet, checking again attempt ${attempts}`)
         await new Promise(resolve => setTimeout(resolve, 500))
       }
     }
-    
-    // Only show error if upload truly failed (photo not found after retries)
+
     if (!uploadSuccess && !photoFound) {
       try {
         await load()
         await new Promise(resolve => setTimeout(resolve, 200))
-        
-        const finalCheck = await getPassport(vin) as any
-        const finalImages = [
-          ...(finalCheck?.sealed?.images?.items || []),
-          ...(finalCheck?.draft?.images?.items || []),
+
+        const finalCheck = await getPassport(vin) as PassportRecord
+        const finalImages: PhotoItem[] = [
+          ...((finalCheck?.sealed?.images?.items ?? []) as PhotoItem[]),
+          ...((finalCheck?.draft?.images?.items ?? []) as PhotoItem[]),
         ]
-        const finalPhotoExists = finalImages.some((img: any) => img.role === activeRole)
-        
+        const finalPhotoExists = finalImages.some(img => img.role === activeRole)
+
         if (!finalPhotoExists) {
           alert('Upload failed - please try again')
         }
       } catch {
-        // If final check fails, assume upload failed
         alert('Upload failed - please try again')
       }
     }
@@ -549,7 +544,7 @@ export default function Vin() {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'image/*'
-    ;(input as any).capture = 'environment'
+    input.setAttribute('capture', 'environment')
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0]
       if (!file) return
@@ -572,9 +567,10 @@ export default function Vin() {
             }`
           : 'No VIN detected. Try windshield, dashboard, or engine bay VIN plate.'
         alert(message)
-      } catch (error: any) {
-        alert(`VIN scanning failed: ${error.message}`)
-      } finally {
+      } catch (error: unknown) {
+      const message = getErrorMessage(error, 'VIN scanning failed');
+      alert(`VIN scanning failed: ${message}`)
+    } finally {
         setOcrScanning(false)
       }
     }
@@ -619,13 +615,13 @@ export default function Vin() {
               src={g?.img}
               alt={g?.title}
               className="w-full h-full object-cover"
-              onError={(e:any)=>{ e.currentTarget.style.display='none'; }}
+              onError={event => { event.currentTarget.style.display = 'none' }}
             />
           </div>
           <div className="p-4 space-y-2">
             <button onClick={onProceed}
                     className="w-full rounded-xl bg-teal-600 hover:bg-teal-700 text-white py-3 text-sm font-medium">
-              📷 Take {g?.title} Photo
+              📷 Take {g?.title} photo
             </button>
             {canScanVin && (
               <button
@@ -1111,8 +1107,8 @@ export default function Vin() {
                       await setDekraUrlApi(vin, normalizedUrl)
                       setDekraUrlInput('')
                       await load()
-                    } catch (e:any) {
-                      alert(e?.message || String(e))
+                    } catch (error: unknown) {
+                      alert(getErrorMessage(error, 'Failed to save DEKRA link'))
                     } finally {
                       setSaving(null)
                     }
@@ -1243,7 +1239,7 @@ export default function Vin() {
               ref={fileRef}
               type="file"
               accept="image/*"
-              {...({ capture: 'environment' } as any)}
+              capture="environment"
               className="hidden"
               onChange={onFile}
             />
@@ -1252,7 +1248,7 @@ export default function Vin() {
               ref={odometerFileRef}
               type="file"
               accept="image/*"
-              {...({ capture: 'environment' } as any)}
+              capture="environment"
               className="hidden"
               onChange={onOdometerFile}
             />
@@ -1302,8 +1298,8 @@ export default function Vin() {
                 await sealStrict(vin)
                 alert('Sealed ✓')
                 await load()
-              } catch (e: any) {
-                alert('Seal failed: ' + (e?.message || String(e)))
+              } catch (error: unknown) {
+                alert('Seal failed: ' + getErrorMessage(error, 'Unknown sealing error'))
               } finally {
                 setSealing(false)
               }
@@ -1320,3 +1316,23 @@ export default function Vin() {
     </div>
   )
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

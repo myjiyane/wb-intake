@@ -1,6 +1,25 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserMultiFormatReader } from '@zxing/browser'
-import { ocrVinFromImage, isValidVin, formatVin, type OcrResult } from '../lib/api'
+import type { IScannerControls } from '@zxing/browser'
+import { ocrVinFromImage, type OcrResult } from '../lib/api'
+import { formatVin, normalizeVin, isValidVin } from '../lib/vin'
+
+// Helper function to get friendly error messages
+function getFriendlyError(error: Error, fallback: string): string {
+  if (error.name === 'NotAllowedError') {
+    return 'Camera permission denied. Please enable camera access and try again.';
+  }
+  if (error.name === 'NotFoundError') {
+    return 'No camera found on this device.';
+  }
+  if (error.name === 'OverconstrainedError') {
+    return 'Camera constraints not supported. Trying fallback resolution.';
+  }
+  if (error.name === 'NotReadableError') {
+    return 'Camera is currently being used by another application.';
+  }
+  return error.message || fallback;
+}
 
 type Props = { 
   onResult: (vin: string) => void; 
@@ -10,6 +29,14 @@ type Props = {
   allowInvalidVins?: boolean;
 }
 
+type DecodeCallback = Parameters<BrowserMultiFormatReader['decodeFromVideoDevice']>[2];
+type GetUserMediaFn = (constraints?: MediaStreamConstraints) => Promise<MediaStream>;
+type LegacyNavigator = Navigator & {
+  getUserMedia?: GetUserMediaFn;
+  webkitGetUserMedia?: GetUserMediaFn;
+  mozGetUserMedia?: GetUserMediaFn;
+};
+
 export default function VinScanner({ 
   onResult, 
   onClose, 
@@ -18,7 +45,7 @@ export default function VinScanner({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const readerRef = useRef<BrowserMultiFormatReader | null>(null)
-  const controlsRef = useRef<ReturnType<BrowserMultiFormatReader['decodeFromVideoDevice']> | null>(null)
+  const controlsRef = useRef<IScannerControls | null>(null)
 
   const [detected, setDetected] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -29,137 +56,136 @@ export default function VinScanner({
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null)
   const [ocrProgress, setOcrProgress] = useState<'validating' | 'compressing' | 'uploading' | 'processing' | null>(null)
   const [showCandidates, setShowCandidates] = useState(false)
+  const framingReady = true // For now, assume framing is always ready
 
-  const normalizeVin = (s: string) =>
-    s.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/[IOQ]/g, '').slice(0, 17)
+  const stop = useCallback(() => {
+    controlsRef.current?.stop();
+    setScanning(false);
+  }, []);
 
-  async function stop() {
-    try { controlsRef.current?.stop() } catch {}
-    setScanning(false)
-  }
+  const handleDecoded = useCallback<DecodeCallback>((result) => {
+    const raw = result?.getText?.();
+    if (!raw) return;
+
+    const vinCandidate = normalizeVin(raw);
+    if (vinCandidate.length < 11) return;
+
+    const formatted = formatVin(vinCandidate);
+    const valid = isValidVin(formatted);
+
+    setDetected(formatted);
+    setOcrResult({
+      ok: true,
+      vin: formatted,
+      vinValid: valid,
+      candidates: [formatted],
+      confidence: 100,
+      processingTime: 0,
+      textExtracted: true,
+      totalBlocks: 1,
+      lineCount: 1,
+      fromCache: false,
+    });
+
+    if (valid || allowInvalidVins) {
+      stop();
+      onResult(formatted);
+      onClose();
+    }
+  }, [allowInvalidVins, onClose, onResult, stop]);
 
   const startWithConstraints = useCallback(async (constraints?: MediaTrackConstraints) => {
-    if (!readerRef.current) readerRef.current = new BrowserMultiFormatReader()
-    const reader = readerRef.current
-    const video = videoRef.current!
-    setScanning(true)
-    setErr('')
-    controlsRef.current = await reader.decodeFromVideoDevice(
-      (constraints ? { video: constraints } : undefined) as any,
-      video,
-      (result) => {
-        const raw = result?.getText?.()
-        if (!raw) return
-        const vin = normalizeVin(raw)
-        if (vin.length >= 11) {
-          const formatted = formatVin(vin)
-          const valid = isValidVin(formatted)
-          
-          setDetected(formatted)
-          setOcrResult({
-            ok: true,
-            vin: formatted,
-            vinValid: valid,
-            candidates: [formatted],
-            confidence: 100, // Live scan assumed high confidence
-            processingTime: 0,
-            textExtracted: true,
-            totalBlocks: 1,
-            lineCount: 1,
-            fromCache: false
-          })
-          
-          // Auto-accept if valid, or if invalid VINs are allowed
-          if (valid || allowInvalidVins) {
-            stop()
-            onResult(formatted)
-            onClose()
-          }
-        }
-      }
-    )
-  }, [onClose, onResult, allowInvalidVins])
+    if (!readerRef.current) readerRef.current = new BrowserMultiFormatReader();
+    const reader = readerRef.current;
+    const video = videoRef.current;
+    if (!video) return;
+
+    setScanning(true);
+    setErr('');
+
+    if (constraints) {
+      const mediaConstraints: MediaStreamConstraints = { video: constraints };
+      controlsRef.current = await reader.decodeFromConstraints(mediaConstraints, video, handleDecoded);
+      return;
+    }
+
+    controlsRef.current = await reader.decodeFromVideoDevice(undefined, video, handleDecoded);
+  }, [handleDecoded]);
 
   const startScan = useCallback(async () => {
-    setDetected('')
-    setErr('')
-    setOcrResult(null)
+    setDetected('');
+    setErr('');
+    setOcrResult(null);
+
+    const primaryConstraints: MediaTrackConstraints = {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    };
+
     try {
-      await startWithConstraints({ 
-        facingMode: { ideal: 'environment' }, 
-        width: { ideal: 1280 }, 
-        height: { ideal: 720 } 
-      })
-      return
-    } catch (e: any) { 
-      if (e?.name !== 'OverconstrainedError') setErr(e?.message || String(e)) 
-    }
-    
-    try { 
-      await startWithConstraints({ facingMode: { ideal: 'environment' } })
-      return 
-    } catch {}
-    
-    try {
-      const devices = await navigator.mediaDevices?.enumerateDevices?.()
-      const vids = (devices || []).filter(d => d.kind === 'videoinput')
-      const backFirst = vids.find(d => /back|rear|environment/i.test(d.label)) || vids[vids.length - 1]
-      
-      if (backFirst?.deviceId) {
-        if (!readerRef.current) readerRef.current = new BrowserMultiFormatReader()
-        const reader = readerRef.current
-        const video = videoRef.current!
-        setScanning(true)
-        controlsRef.current = await reader.decodeFromVideoDevice(backFirst.deviceId, video, (result) => {
-          const raw = result?.getText?.()
-          if (!raw) return
-          const vin = normalizeVin(raw)
-          if (vin.length >= 11) {
-            const formatted = formatVin(vin)
-            const valid = isValidVin(formatted)
-            
-            setDetected(formatted)
-            setOcrResult({
-              ok: true,
-              vin: formatted,
-              vinValid: valid,
-              candidates: [formatted],
-              confidence: 100,
-              processingTime: 0,
-              textExtracted: true,
-              totalBlocks: 1,
-              lineCount: 1,
-              fromCache: false
-            })
-            
-            if (valid || allowInvalidVins) {
-              stop()
-              onResult(formatted)
-              onClose()
-            }
-          }
-        })
-        return
+      await startWithConstraints(primaryConstraints);
+      return;
+    } catch (error: unknown) {
+      setScanning(false);
+      if (error instanceof Error && error.name !== 'OverconstrainedError') {
+        setErr(getFriendlyError(error, 'Unable to start camera with requested resolution.'));
       }
-    } catch {}
-    
-    try { 
-      await startWithConstraints(undefined)
-      return 
-    } catch (e: any) {
-      setErr(e?.message || 'Camera stream unavailable on this device/origin')
-      setScanning(false)
     }
-  }, [startWithConstraints, onClose, onResult, allowInvalidVins])
+
+    try {
+      await startWithConstraints({ facingMode: { ideal: 'environment' } });
+      return;
+    } catch (error: unknown) {
+      setScanning(false);
+      void error;
+    }
+
+    try {
+      const devices = await navigator.mediaDevices?.enumerateDevices?.();
+      const videoDevices = (devices ?? []).filter(device => device.kind === 'videoinput');
+      const fallbackDevice = videoDevices.find(device => /back|rear|environment/i.test(device.label))
+        ?? videoDevices[videoDevices.length - 1];
+
+      if (fallbackDevice?.deviceId) {
+        if (!readerRef.current) readerRef.current = new BrowserMultiFormatReader();
+        const reader = readerRef.current;
+        const video = videoRef.current;
+        if (!video) return;
+
+        setScanning(true);
+        setErr('');
+        controlsRef.current = await reader.decodeFromVideoDevice(fallbackDevice.deviceId, video, handleDecoded);
+        return;
+      }
+    } catch (error: unknown) {
+      setScanning(false);
+      if (error instanceof Error) {
+        setErr(getFriendlyError(error, 'Unable to start camera with requested resolution.'));
+      }
+    }
+
+    setErr('Camera stream unavailable on this device/origin');
+  }, [handleDecoded, startWithConstraints]);
 
   useEffect(() => {
-    const nav: any = navigator
-    const hasGUM = !!((navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ||
-      nav.getUserMedia || nav.webkitGetUserMedia || nav.mozGetUserMedia)
-    if (hasGUM) startScan()
-    else setErr('Live camera not supported on this origin; use photo capture instead.')
-    return () => { stop() }
-  }, [startScan])
+    const legacyNavigator = navigator as LegacyNavigator;
+    const hasGetUserMedia =
+      typeof navigator.mediaDevices?.getUserMedia === 'function' ||
+      typeof legacyNavigator.getUserMedia === 'function' ||
+      typeof legacyNavigator.webkitGetUserMedia === 'function' ||
+      typeof legacyNavigator.mozGetUserMedia === 'function';
+
+    if (hasGetUserMedia) {
+      startScan().catch(() => undefined);
+    } else {
+      setErr('Live camera not supported on this origin; use photo capture instead.');
+    }
+
+    return () => {
+      stop();
+    };
+  }, [startScan, stop]);
 
   // Enhanced OCR with progress tracking and better error handling
   async function decodeFile(file: File) {
@@ -211,9 +237,10 @@ export default function VinScanner({
           setErr(`No text detected in photo. Try getting closer or improving lighting.`)
         }
       }
-    } catch (e: any) {
-      setErr(e?.message || 'Failed to read VIN from photo')
-      setOcrResult(null)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to read VIN from photo';
+      setErr(message);
+      setOcrResult(null);
     } finally {
       setBusy(false)
       setOcrProgress(null)
@@ -255,7 +282,7 @@ export default function VinScanner({
   }
 
   // Validation status component
-  const ValidationStatus = ({ vin, valid, confidence }: { vin: string, valid: boolean, confidence: number }) => {
+  const ValidationStatus = ({ valid, confidence }: { valid: boolean; confidence: number }) => {
     if (!showValidation) return null
     
     return (
@@ -268,11 +295,29 @@ export default function VinScanner({
     )
   }
 
+  const shutterDisabled = busy || !framingReady;
+
   return (
     <div className="fixed inset-0 z-50">
       {/* Video background */}
       <video ref={videoRef} className="w-full h-full object-cover" muted playsInline autoPlay />
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30" />
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <div className={`relative w-[72%] max-w-xs aspect-[4/3] rounded-lg border-2 ${framingReady ? 'border-emerald-400' : 'border-amber-300'}`}>
+          <div className="absolute inset-0 border border-white/30 rounded-lg pointer-events-none" />
+          <div className="absolute inset-0 flex justify-center">
+            <div className="w-px h-full bg-white/20" />
+          </div>
+          <div className="absolute inset-0 flex items-center">
+            <div className="h-px w-full bg-white/20" />
+          </div>
+        </div>
+      </div>
+      {!framingReady && !busy && !scanning && (
+        <div className="pointer-events-none absolute bottom-32 left-0 right-0 flex justify-center">
+          <div className="bg-amber-500/90 text-white text-xs px-3 py-2 rounded-full shadow">Align the VIN within the guide to enable capture</div>
+        </div>
+      )}
 
       {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 p-4 pt-[calc(env(safe-area-inset-top,0)+1rem)] flex items-center justify-between">
@@ -295,10 +340,11 @@ export default function VinScanner({
           {/* Still-photo capture with progress indication */}
           <label
             className={`pointer-events-auto rounded-lg px-3 py-2 text-sm font-medium cursor-pointer transition-colors ${
-              busy 
-                ? 'bg-white/60 text-slate-500 cursor-not-allowed' 
+              shutterDisabled 
+                ? 'bg-white/60 text-slate-500 cursor-not-allowed pointer-events-none' 
                 : 'bg-white/90 text-slate-900 hover:bg-white'
             }`}
+            aria-disabled={shutterDisabled}
           >
             {busy ? (ocrProgress ? ocrProgress.charAt(0).toUpperCase() + ocrProgress.slice(1) + '...' : 'Reading...') : 'Take Photo'}
             <input
@@ -306,7 +352,7 @@ export default function VinScanner({
               accept="image/*"
               capture="environment"
               className="hidden"
-              disabled={busy}
+              disabled={shutterDisabled}
               onChange={async (e) => {
                 const f = e.target.files?.[0]
                 if (f) { await decodeFile(f) }
@@ -325,11 +371,7 @@ export default function VinScanner({
               <div className="text-xs opacity-80">Scanned VIN</div>
               <div className="font-mono text-lg tracking-wide break-all">{detected}</div>
               {ocrResult && (
-                <ValidationStatus 
-                  vin={detected} 
-                  valid={ocrResult.vinValid} 
-                  confidence={ocrResult.confidence} 
-                />
+                <ValidationStatus valid={ocrResult.vinValid} confidence={ocrResult.confidence} />
               )}
               {ocrResult?.fromCache && (
                 <div className="mt-1 text-xs text-blue-300">⚡ Cached result</div>
@@ -417,7 +459,7 @@ export default function VinScanner({
         )}
 
         {/* OCR processing stats (dev mode) */}
-        {process.env.NODE_ENV === 'development' && ocrResult && (
+        {import.meta.env.DEV && ocrResult && (
           <div className="rounded-xl bg-black/50 text-white px-4 py-2 text-xs opacity-70">
             <div>Processing: {ocrResult.processingTime}ms • Blocks: {ocrResult.totalBlocks} • Lines: {ocrResult.lineCount}</div>
           </div>
@@ -426,3 +468,17 @@ export default function VinScanner({
     </div>
   )
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
