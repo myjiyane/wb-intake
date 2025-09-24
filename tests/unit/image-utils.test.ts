@@ -3,6 +3,10 @@ import { analyzeAndCropImage, type ImageAnalysis, type AnalyzeOptions } from '..
 import { createTestFile } from '../mocks/test-data'
 
 // Mock canvas operations for consistent testing
+const createDefaultToBlob = () => vi.fn().mockImplementation((callback, mimeType: string = 'image/jpeg') => {
+  callback(new Blob(['processed'], { type: mimeType }))
+})
+
 const mockCanvas = {
   width: 1920,
   height: 1080,
@@ -19,15 +23,18 @@ const mockCanvas = {
       height: 1080
     }),
     putImageData: vi.fn()
-  })
+  }),
+  toBlob: createDefaultToBlob()
 }
 
 // Mock createImageBitmap
-global.createImageBitmap = vi.fn().mockResolvedValue({
+const defaultImageBitmap = () => ({
   width: 1920,
   height: 1080,
   close: vi.fn()
 })
+
+global.createImageBitmap = vi.fn().mockResolvedValue(defaultImageBitmap())
 
 // Mock document.createElement for canvas
 global.document.createElement = vi.fn().mockImplementation((tagName: string) => {
@@ -40,6 +47,14 @@ global.document.createElement = vi.fn().mockImplementation((tagName: string) => 
 describe('Image Analysis & Preprocessing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanvas.toBlob = createDefaultToBlob()
+    global.createImageBitmap = vi.fn().mockResolvedValue(defaultImageBitmap())
+    ;(global.document.createElement as unknown as vi.Mock).mockImplementation((tagName: string) => {
+      if (tagName === 'canvas') {
+        return mockCanvas
+      }
+      return {}
+    })
   })
 
   describe('analyzeAndCropImage', () => {
@@ -284,23 +299,55 @@ describe('Image Analysis & Preprocessing', () => {
 
     test('accepts high quality images', async () => {
       // Mock high quality image data
+      const width = 256
+      const height = 256
+      const data = new Uint8ClampedArray(width * height * 4)
+      const centerBounds = {
+        x0: Math.floor(width * 0.25),
+        x1: Math.ceil(width * 0.75),
+        y0: Math.floor(height * 0.25),
+        y1: Math.ceil(height * 0.75)
+      }
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4
+          const inCenter =
+            x >= centerBounds.x0 &&
+            x < centerBounds.x1 &&
+            y >= centerBounds.y0 &&
+            y < centerBounds.y1
+
+          const value = inCenter
+            ? ((x + y) % 2 === 0 ? 190 : 60) // High contrast in centre for strong framing score
+            : 120 // Softer edges to keep contrast low outside centre
+
+          data[idx] = value
+          data[idx + 1] = value
+          data[idx + 2] = value
+          data[idx + 3] = 255
+        }
+      }
+
       const goodCanvas = {
         ...mockCanvas,
+        width,
+        height,
         getContext: vi.fn().mockReturnValue({
           ...mockCanvas.getContext(),
           getImageData: vi.fn().mockReturnValue({
-            data: new Uint8ClampedArray(1920 * 1080 * 4).map((_, i) => {
-              const pixelIndex = Math.floor(i / 4)
-              // Create good contrast with sufficient variation
-              const baseValue = 100 + Math.sin(pixelIndex * 0.01) * 50 // 50-150 range
-              const noise = Math.random() * 30 - 15 // ±15 noise for sharpness
-              return i % 4 === 3 ? 255 : Math.max(0, Math.min(255, baseValue + noise))
-            }),
-            width: 1920,
-            height: 1080
+            data,
+            width,
+            height
           })
         })
       }
+
+      global.createImageBitmap = vi.fn().mockResolvedValue({
+        width,
+        height,
+        close: vi.fn()
+      })
 
       global.document.createElement = vi.fn().mockReturnValue(goodCanvas) as any
 
@@ -322,7 +369,11 @@ describe('Image Analysis & Preprocessing', () => {
     })
 
     test('handles canvas creation failures gracefully', async () => {
-      global.document.createElement = vi.fn().mockReturnValue(null) as any
+      global.document.createElement = vi.fn().mockReturnValue({
+        getContext: () => null,
+        width: 0,
+        height: 0
+      }) as any
 
       const testFile = createTestFile('test.jpg')
 

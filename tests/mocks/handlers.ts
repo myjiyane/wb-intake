@@ -5,6 +5,27 @@ import { mockVinDatabase, mockOdometerDatabase } from './test-data'
 // Get base URL from environment or use default for testing
 const BASE_URL = process.env.VITE_API_BASE_URL || 'http://localhost:3000'
 
+function buildPassportResponse(vin: string) {
+  return {
+    vin,
+    draft: {
+      images: { items: [] as Array<{ role: string; url?: string; object_key?: string }> },
+      tyres_mm: {
+        fl: null,
+        fr: null,
+        rl: null,
+        rr: null
+      },
+      dekra: {
+        url: null,
+        inspection_ts: null,
+        site: null
+      }
+    },
+    sealed: null
+  }
+}
+
 export const handlers = [
   // VIN OCR endpoint - handle both with and without base URL
   http.post(`${BASE_URL}/ocr/vin`, async ({ request }) => {
@@ -199,6 +220,25 @@ export const handlers = [
     })
   }),
 
+  // Tyre measurements endpoint
+  http.post(`${BASE_URL}/intake/tyres`, async ({ request }) => {
+    await new Promise(resolve => setTimeout(resolve, 120))
+    const payload = await request.json()
+    return HttpResponse.json({
+      ok: true,
+      tyres_mm: payload?.tyres_mm ?? null
+    })
+  }),
+
+  http.post('/intake/tyres', async ({ request }) => {
+    await new Promise(resolve => setTimeout(resolve, 120))
+    const payload = await request.json()
+    return HttpResponse.json({
+      ok: true,
+      tyres_mm: payload?.tyres_mm ?? null
+    })
+  }),
+
   // Checklist endpoint
   http.get(`${BASE_URL}/intake/checklist/:vin`, ({ params }) => {
     return HttpResponse.json({
@@ -214,6 +254,17 @@ export const handlers = [
       },
       ready: false
     })
+  }),
+
+  // Passport endpoint
+  http.get(`${BASE_URL}/passports/:vin`, ({ params }) => {
+    const vin = params.vin as string
+    return HttpResponse.json(buildPassportResponse(vin))
+  }),
+
+  http.get('/passports/:vin', ({ params }) => {
+    const vin = params.vin as string
+    return HttpResponse.json(buildPassportResponse(vin))
   }),
 
   // Health check

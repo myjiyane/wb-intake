@@ -24,6 +24,10 @@ global.IntersectionObserver = class IntersectionObserver {
 global.URL.createObjectURL = vi.fn(() => 'mocked-url')
 global.URL.revokeObjectURL = vi.fn()
 
+// Basic window dialog mocks
+global.alert = vi.fn()
+global.confirm = vi.fn().mockReturnValue(true)
+
 // Mock File API
 global.File = class File extends Blob {
   name: string
@@ -77,8 +81,9 @@ HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({
   canvas: {} as HTMLCanvasElement
 })
 
-HTMLCanvasElement.prototype.toBlob = vi.fn().mockImplementation((callback) => {
-  callback(new Blob(['fake-canvas-data'], { type: 'image/jpeg' }))
+HTMLCanvasElement.prototype.toBlob = vi.fn().mockImplementation((callback, mimeType = 'image/png') => {
+  const blobType = typeof mimeType === 'string' && mimeType.length > 0 ? mimeType : 'image/png'
+  callback(new Blob(['fake-canvas-data'], { type: blobType }))
 })
 
 // Mock createImageBitmap for image processing
