@@ -2,11 +2,11 @@ import { http, HttpResponse } from 'msw'
 import type { OcrResult, ocrOdoResult } from '../../src/lib/api'
 import { mockVinDatabase, mockOdometerDatabase } from './test-data'
 
-// Get base URL from environment or use default
+// Get base URL from environment or use default for testing
 const BASE_URL = process.env.VITE_API_BASE_URL || 'http://localhost:3000'
 
 export const handlers = [
-  // VIN OCR endpoint
+  // VIN OCR endpoint - handle both with and without base URL
   http.post(`${BASE_URL}/ocr/vin`, async ({ request }) => {
     // Simulate processing delay
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -48,8 +48,91 @@ export const handlers = [
     return HttpResponse.json(response)
   }),
 
+  // VIN OCR endpoint - handle case when BASE_URL is empty
+  http.post('/ocr/vin', async ({ request }) => {
+    // Simulate processing delay
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    const formData = await request.formData()
+    const file = formData.get('file') as File
+
+    if (!file) {
+      return HttpResponse.json(
+        { error: 'no_file', message: 'No image file provided' },
+        { status: 400 }
+      )
+    }
+
+    // Get expected result based on filename
+    const mockData = mockVinDatabase[file.name]
+    if (!mockData) {
+      // Default negative case
+      const response: OcrResult = {
+        ok: false,
+        vin: null,
+        vinValid: false,
+        candidates: [],
+        confidence: 0.10,
+        processingTime: 150,
+        textExtracted: true,
+        totalBlocks: 0,
+        lineCount: 0,
+        fromCache: false
+      }
+      return HttpResponse.json(response)
+    }
+
+    // Return successful mock result
+    const response: OcrResult = {
+      ok: true,
+      vin: mockData.vin,
+      vinValid: mockData.vinValid,
+      candidates: mockData.candidates,
+      confidence: mockData.confidence,
+      processingTime: Math.floor(Math.random() * 500) + 200,
+      textExtracted: true,
+      totalBlocks: 5,
+      lineCount: 12,
+      fromCache: false
+    }
+
+    return HttpResponse.json(response)
+  }),
+
   // Odometer OCR endpoint
   http.post(`${BASE_URL}/ocr/odometer`, async ({ request }) => {
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    const formData = await request.formData()
+    const file = formData.get('file') as File
+
+    if (!file) {
+      return HttpResponse.json(
+        { error: 'no_file', message: 'No image file provided' },
+        { status: 400 }
+      )
+    }
+
+    const mockData = mockOdometerDatabase[file.name] || mockOdometerDatabase['default']
+
+    const response: ocrOdoResult = {
+      ok: true,
+      km: mockData.km,
+      unit: 'km',
+      candidates: mockData.candidates,
+      confidence: mockData.confidence,
+      processingTime: Math.random() * 800 + 300, // 300-1100ms
+      textExtracted: true,
+      totalBlocks: Math.floor(Math.random() * 40) + 8,
+      lineCount: Math.floor(Math.random() * 15) + 3,
+      fromCache: false
+    }
+
+    return HttpResponse.json(response)
+  }),
+
+  // Odometer OCR endpoint - handle case when BASE_URL is empty
+  http.post('/ocr/odometer', async ({ request }) => {
     await new Promise(resolve => setTimeout(resolve, 80))
 
     const formData = await request.formData()

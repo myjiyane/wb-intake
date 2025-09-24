@@ -8,6 +8,9 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
+    env: {
+      VITE_API_BASE_URL: ''
+    },
     coverage: {
       reporter: ['text', 'json', 'html'],
       exclude: [

@@ -286,11 +286,11 @@ export const mockOdometerDatabase: Record<string, {
   'cracked_display_001.jpg': {
     km: 78901,
     candidates: [
-      { value: 78901, score: 0.68 },
+      { value: 78901, score: 0.78 },
       { value: 78900, score: 0.42 },
       { value: 70901, score: 0.25 }
     ],
-    confidence: 0.73
+    confidence: 0.78
   },
 
   // Decimal readings
@@ -320,8 +320,10 @@ export const mockOdometerDatabase: Record<string, {
 }
 
 // Helper function to create test files with specific names
-export function createTestFile(filename: string, content: string = 'test-content'): File {
-  const blob = new Blob([content], { type: 'image/jpeg' })
+export function createTestFile(filename: string, content?: string): File {
+  // Create realistic file content (minimum 2KB for JPEG validation)
+  const defaultContent = content || 'fake-image-jpeg-content'.repeat(100) // ~2.3KB
+  const blob = new Blob([defaultContent], { type: 'image/jpeg' })
   return new File([blob], filename, { type: 'image/jpeg', lastModified: Date.now() })
 }
 

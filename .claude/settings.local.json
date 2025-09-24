@@ -7,7 +7,9 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Read(//c/Users/Samkelo/OneDrive - iqlab/Clients/**)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(npm install)",
+      "Bash(npm run test:run:*)"
     ],
     "deny": [],
     "ask": []
