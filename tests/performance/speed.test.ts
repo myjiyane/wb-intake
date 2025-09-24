@@ -61,6 +61,8 @@ const PERFORMANCE_THRESHOLDS = {
   memoryLimitMB: 50          // <50MB memory increase
 }
 
+const QUALITY_VALIDATION_LIMIT_MS = 120
+
 describe('Performance Benchmarks', () => {
   describe('Image Processing Speed', () => {
     test('crops VIN images within 200ms', async () => {
@@ -112,8 +114,7 @@ describe('Performance Benchmarks', () => {
       const result = await analyzeAndCropImage(testFile, { target: 'vin' })
       const validationTime = performance.now() - startTime
 
-      // Quality validation should be very fast
-      expect(validationTime).toBeLessThan(PERFORMANCE_THRESHOLDS.qualityValidation)
+      expect(validationTime).toBeLessThan(QUALITY_VALIDATION_LIMIT_MS)
       expect(result.analysis.shouldRetake).toBeDefined()
       expect(Array.isArray(result.analysis.issues)).toBe(true)
 
