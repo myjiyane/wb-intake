@@ -8,7 +8,8 @@ vi.mock('../../src/lib/api', async () => {
   const actual = await vi.importActual('../../src/lib/api')
   return {
     ...actual,
-    ocrVinFromImage: vi.fn().mockImplementation(async (file: File): Promise<OcrResult> => {
+    ocrVinFromImage: vi.fn().mockImplementation(async (_file: File): Promise<OcrResult> => {
+      void _file
       // Simulate realistic processing time
       const processingTime = Math.floor(Math.random() * 500) + 200 // 200-700ms
       await new Promise(resolve => setTimeout(resolve, processingTime))
@@ -26,7 +27,8 @@ vi.mock('../../src/lib/api', async () => {
         fromCache: false
       }
     }),
-    ocrOdoFromImage: vi.fn().mockImplementation(async (file: File): Promise<ocrOdoResult> => {
+    ocrOdoFromImage: vi.fn().mockImplementation(async (_file: File): Promise<ocrOdoResult> => {
+      void _file
       // Simulate realistic processing time
       const processingTime = Math.floor(Math.random() * 600) + 300 // 300-900ms
       await new Promise(resolve => setTimeout(resolve, processingTime))
@@ -212,15 +214,20 @@ describe('Performance Benchmarks', () => {
 
     test('properly cleans up canvas resources', async () => {
       // Track canvas creation calls
-      const originalCreateElement = global.document.createElement
+      const originalCreateElement = document.createElement.bind(document)
       let canvasCount = 0
 
-      global.document.createElement = vi.fn().mockImplementation((tagName: string) => {
+      const createElementSpy = vi.fn<typeof document.createElement>((tagName: string, options?: ElementCreationOptions) => {
         if (tagName === 'canvas') {
           canvasCount++
         }
-        return originalCreateElement.call(document, tagName)
-      }) as any
+        return originalCreateElement(tagName, options)
+      })
+
+      Object.defineProperty(document, 'createElement', {
+        value: createElementSpy,
+        configurable: true
+      })
 
       // Process several images
       for (let i = 0; i < 5; i++) {
@@ -235,18 +242,21 @@ describe('Performance Benchmarks', () => {
       console.log(`Canvas elements created: ${canvasCount}`)
 
       // Restore original function
-      global.document.createElement = originalCreateElement
+      Object.defineProperty(document, 'createElement', {
+        value: originalCreateElement,
+        configurable: true
+      })
     })
   })
 
   describe('Baseline Performance Metrics', () => {
     test('establishes baseline performance metrics', async () => {
-      const metrics = {
+      const metrics: Record<string, number[]> = {
         vinProcessing: [],
         odometerProcessing: [],
         vinOcr: [],
         odometerOcr: []
-      } as Record<string, number[]>
+      }
 
       // Run multiple iterations to get average performance
       const iterations = 5

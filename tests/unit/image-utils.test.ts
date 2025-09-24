@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { analyzeAndCropImage, type ImageAnalysis, type AnalyzeOptions } from '../../src/lib/image-utils'
+import { analyzeAndCropImage, type AnalyzeOptions } from '../../src/lib/image-utils'
 import { createTestFile } from '../mocks/test-data'
 
 // Mock canvas operations for consistent testing
@@ -37,23 +37,29 @@ const defaultImageBitmap = () => ({
 global.createImageBitmap = vi.fn().mockResolvedValue(defaultImageBitmap())
 
 // Mock document.createElement for canvas
-global.document.createElement = vi.fn().mockImplementation((tagName: string) => {
+const realCreateElement = document.createElement.bind(document)
+const createElementMock = vi.fn<typeof document.createElement>((tagName: string, options?: ElementCreationOptions) => {
   if (tagName === 'canvas') {
-    return mockCanvas
+    return mockCanvas as unknown as HTMLCanvasElement
   }
-  return {}
-}) as any
+  return realCreateElement(tagName, options)
+})
+
+Object.defineProperty(document, 'createElement', {
+  value: createElementMock,
+  configurable: true
+})
 
 describe('Image Analysis & Preprocessing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCanvas.toBlob = createDefaultToBlob()
     global.createImageBitmap = vi.fn().mockResolvedValue(defaultImageBitmap())
-    ;(global.document.createElement as unknown as vi.Mock).mockImplementation((tagName: string) => {
+    createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
       if (tagName === 'canvas') {
-        return mockCanvas
+        return mockCanvas as unknown as HTMLCanvasElement
       }
-      return {}
+      return realCreateElement(tagName, options)
     })
   })
 
@@ -214,7 +220,12 @@ describe('Image Analysis & Preprocessing', () => {
         })
       }
 
-      global.document.createElement = vi.fn().mockReturnValue(darkCanvas) as any
+      createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        if (tagName === 'canvas') {
+          return darkCanvas as unknown as HTMLCanvasElement
+        }
+        return realCreateElement(tagName, options)
+      })
 
       const testFile = createTestFile('dark-image.jpg')
       const result = await analyzeAndCropImage(testFile, { target: 'vin' })
@@ -237,7 +248,12 @@ describe('Image Analysis & Preprocessing', () => {
         })
       }
 
-      global.document.createElement = vi.fn().mockReturnValue(brightCanvas) as any
+      createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        if (tagName === 'canvas') {
+          return brightCanvas as unknown as HTMLCanvasElement
+        }
+        return realCreateElement(tagName, options)
+      })
 
       const testFile = createTestFile('bright-image.jpg')
       const result = await analyzeAndCropImage(testFile, { target: 'vin' })
@@ -260,7 +276,12 @@ describe('Image Analysis & Preprocessing', () => {
         })
       }
 
-      global.document.createElement = vi.fn().mockReturnValue(moderateCanvas) as any
+      createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        if (tagName === 'canvas') {
+          return moderateCanvas as unknown as HTMLCanvasElement
+        }
+        return realCreateElement(tagName, options)
+      })
 
       const testFile = createTestFile('moderate-light.jpg')
 
@@ -288,7 +309,12 @@ describe('Image Analysis & Preprocessing', () => {
         })
       }
 
-      global.document.createElement = vi.fn().mockReturnValue(lowContrastCanvas) as any
+      createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        if (tagName === 'canvas') {
+          return lowContrastCanvas as unknown as HTMLCanvasElement
+        }
+        return realCreateElement(tagName, options)
+      })
 
       const testFile = createTestFile('low-contrast.jpg')
       const result = await analyzeAndCropImage(testFile, { target: 'vin' })
@@ -349,7 +375,12 @@ describe('Image Analysis & Preprocessing', () => {
         close: vi.fn()
       })
 
-      global.document.createElement = vi.fn().mockReturnValue(goodCanvas) as any
+      createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        if (tagName === 'canvas') {
+          return goodCanvas as unknown as HTMLCanvasElement
+        }
+        return realCreateElement(tagName, options)
+      })
 
       const testFile = createTestFile('good-quality.jpg')
       const result = await analyzeAndCropImage(testFile, { target: 'vin' })
@@ -369,11 +400,16 @@ describe('Image Analysis & Preprocessing', () => {
     })
 
     test('handles canvas creation failures gracefully', async () => {
-      global.document.createElement = vi.fn().mockReturnValue({
-        getContext: () => null,
-        width: 0,
-        height: 0
-      }) as any
+      createElementMock.mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+        if (tagName === 'canvas') {
+          return {
+            getContext: () => null,
+            width: 0,
+            height: 0
+          } as unknown as HTMLCanvasElement
+        }
+        return realCreateElement(tagName, options)
+      })
 
       const testFile = createTestFile('test.jpg')
 

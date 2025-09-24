@@ -29,16 +29,19 @@ global.alert = vi.fn()
 global.confirm = vi.fn().mockReturnValue(true)
 
 // Mock File API
-global.File = class File extends Blob {
-  name: string
-  lastModified: number
+class MockFile extends Blob implements File {
+  readonly name: string
+  readonly lastModified: number
+  readonly webkitRelativePath = ''
 
   constructor(chunks: BlobPart[], name: string, options?: FilePropertyBag) {
     super(chunks, options)
     this.name = name
     this.lastModified = options?.lastModified ?? Date.now()
   }
-} as any
+}
+
+global.File = MockFile as unknown as typeof File
 
 // Mock FileReader
 global.FileReader = class FileReader {
@@ -46,22 +49,26 @@ global.FileReader = class FileReader {
   error: DOMException | null = null
   readyState: number = 0
 
-  onload: ((this: FileReader, ev: ProgressEvent<FileReader>) => any) | null = null
-  onerror: ((this: FileReader, ev: ProgressEvent<FileReader>) => any) | null = null
+  onload: ((this: FileReader, ev: ProgressEvent<FileReader>) => void) | null = null
+  onerror: ((this: FileReader, ev: ProgressEvent<FileReader>) => void) | null = null
 
-  readAsDataURL(file: Blob) {
+  readAsDataURL(_file: Blob) {
+    void _file
     setTimeout(() => {
       this.result = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD'
       this.readyState = 2
-      this.onload?.(new ProgressEvent('load') as any)
+      const event = new ProgressEvent<FileReader>('load')
+      this.onload?.(event)
     }, 0)
   }
 
-  readAsArrayBuffer(file: Blob) {
+  readAsArrayBuffer(_file: Blob) {
+    void _file
     setTimeout(() => {
       this.result = new ArrayBuffer(8)
       this.readyState = 2
-      this.onload?.(new ProgressEvent('load') as any)
+      const event = new ProgressEvent<FileReader>('load')
+      this.onload?.(event)
     }, 0)
   }
 

@@ -22,8 +22,9 @@ import {
   Link as LinkIcon, Scan, Shield, Eye, Zap, Gauge, Edit3, Clock
 } from 'lucide-react'
 
-const IS_TEST_ENV = (typeof import.meta !== 'undefined' && (import.meta as any)?.env?.MODE === 'test') ||
-  (typeof process !== 'undefined' && process.env?.NODE_ENV === 'test')
+const importMetaMode = typeof import.meta !== 'undefined' ? import.meta.env?.MODE : undefined
+const nodeEnvironment = typeof process !== 'undefined' ? process.env?.NODE_ENV : undefined
+const IS_TEST_ENV = importMetaMode === 'test' || nodeEnvironment === 'test'
 
 const DEFAULT_ROLES: ImageRole[] = [
   'exterior_front_34', 'exterior_rear_34', 'left_side', 'right_side',
