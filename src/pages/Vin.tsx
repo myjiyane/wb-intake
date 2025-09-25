@@ -23,7 +23,7 @@ import {
 } from 'lucide-react'
 
 const importMetaMode = typeof import.meta !== 'undefined' ? import.meta.env?.MODE : undefined
-const nodeEnvironment = typeof process !== 'undefined' ? process.env?.NODE_ENV : undefined
+const nodeEnvironment = typeof process !== 'undefined' && process.env ? process.env.NODE_ENV : undefined
 const IS_TEST_ENV = importMetaMode === 'test' || nodeEnvironment === 'test'
 
 const DEFAULT_ROLES: ImageRole[] = [
@@ -332,7 +332,7 @@ export default function Vin() {
       setTimeout(() => {
         setQualityIssue(prev => (prev?.role === 'odometer' ? null : prev))
         setOdometerReading(mockReading)
-        setOdometerInput(mockReading.km)
+        setOdometerInput(mockReading.km ?? '')
         setOdometerJustification('')
         setOdometerScanning(false)
         if (odometerCaptureFallback.current) {

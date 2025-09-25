@@ -9,7 +9,8 @@
       "Read(//c/Users/Samkelo/OneDrive - iqlab/Clients/**)",
       "Bash(git checkout:*)",
       "Bash(npm install)",
-      "Bash(npm run test:run:*)"
+      "Bash(npm run test:run:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []
